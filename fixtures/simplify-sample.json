@@ -1,0 +1,62 @@
+[
+  {
+    "id": "20fe605e-0000-0000-0000-000000000001",
+    "source": "Simplify",
+    "category": "Software",
+    "company_name": "Mechanize",
+    "title": "Software Engineer",
+    "active": true,
+    "date_posted": 1767841111,
+    "date_updated": 1767841111,
+    "url": "https://jobs.ashbyhq.com/mechanize/swe",
+    "locations": ["SF"],
+    "sponsorship": "Other",
+    "degrees": [],
+    "is_visible": true
+  },
+  {
+    "id": "20fe605e-0000-0000-0000-000000000002",
+    "source": "Simplify",
+    "category": "Software",
+    "company_name": "Stripe",
+    "title": "SWE, New Grad",
+    "active": true,
+    "date_posted": 1767854000,
+    "date_updated": 1767854000,
+    "url": "https://stripe.com/jobs/swe-newgrad",
+    "locations": ["Remote", "NYC"],
+    "sponsorship": "OFFERS_SPONSORSHIP",
+    "degrees": [],
+    "is_visible": true
+  },
+  {
+    "id": "20fe605e-0000-0000-0000-000000000003",
+    "source": "Simplify",
+    "category": "Product",
+    "company_name": "Dead Startup Inc",
+    "title": "Product Manager",
+    "active": false,
+    "date_posted": 1765000000,
+    "date_updated": 1765100000,
+    "url": "https://example.com/dead-listing",
+    "locations": ["Austin, TX"],
+    "sponsorship": "None",
+    "degrees": [],
+    "is_visible": true
+  },
+  {
+    "id": "20fe605e-0000-0000-0000-000000000004",
+    "source": "Simplify",
+    "category": "Software",
+    "company_name": "Hidden Corp",
+    "title": "Backend Engineer",
+    "active": true,
+    "date_posted": 1767800000,
+    "date_updated": 1767800000,
+    "url": "https://example.com/hidden",
+    "locations": ["Remote"],
+    "sponsorship": "Other",
+    "degrees": [],
+    "is_visible": false
+  }
+]

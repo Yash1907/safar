@@ -1,0 +1,46 @@
+{
+  "sources": {
+    "simplify": [
+      {
+        "id": "simplify-newgrad",
+        "displayName": "SimplifyJobs New Grad",
+        "owner": "SimplifyJobs",
+        "repo": "New-Grad-Positions",
+        "branch": "dev",
+        "enabled": true
+      },
+      {
+        "id": "simplify-summer2026",
+        "displayName": "SimplifyJobs Summer Internships 2026",
+        "owner": "SimplifyJobs",
+        "repo": "Summer2026-Internships",
+        "branch": "dev",
+        "enabled": false
+      }
+    ],
+    "jobright": [
+      {
+        "id": "jobright-swe-2026",
+        "displayName": "jobright SWE New Grad 2026",
+        "owner": "jobright-ai",
+        "repo": "2026-Software-Engineer-New-Grad",
+        "branch": "master",
+        "enabled": true
+      },
+      {
+        "id": "jobright-data-2026",
+        "displayName": "jobright Data Analysis New Grad 2026",
+        "owner": "jobright-ai",
+        "repo": "2026-Data-Analysis-New-Grad",
+        "branch": "master",
+        "enabled": false
+      }
+    ]
+  },
+  "sheets": {
+    "enabled": true,
+    "spreadsheetId": "1AbCdEfGhIjKlMnOpQrStUvWxYz-your-sheet-id",
+    "sheetName": "Tracker",
+    "serviceAccountKeyPath": "~/.config/safar/gcp-service-account.json"
+  }
+}
