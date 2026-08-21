@@ -8,6 +8,7 @@ import {
   setStatus,
   setNotes,
   undoLastStatus,
+  deleteApplication,
   getStatusHistory,
   clearStatusHistory,
   STATUS_ORDER,
@@ -241,6 +242,30 @@ export function App({ db }: { db: Database }) {
     [db, state.detailJobId],
   );
 
+  const deleteApp = useCallback(
+    (jobId: number) => {
+      const deleted = deleteApplication(db, jobId);
+      if (!deleted) {
+        dispatch({ type: "SET_STATUS_MESSAGE", message: "not tracked — nothing to delete" });
+        return;
+      }
+      const targetJob =
+        state.jobs.find((j) => j.id === jobId) ??
+        state.trackedJobs.find((j) => j.id === jobId);
+      const company = targetJob?.company ?? "job";
+      dispatch({ type: "DELETE_APPLICATION", jobId });
+      dispatch({
+        type: "SET_STATUS_MESSAGE",
+        message: `deleted application for ${company} — like you never applied`,
+      });
+      refreshTrackedJobs();
+      if (jobId === state.detailJobId) {
+        dispatch({ type: "SET_STATUS_HISTORY", entries: [] });
+      }
+    },
+    [db, state.jobs, state.trackedJobs, state.detailJobId, refreshTrackedJobs],
+  );
+
   const runSheetsSync = useCallback(async () => {
     dispatch({ type: "SHEETS_SYNC_START" });
     try {
@@ -318,6 +343,8 @@ export function App({ db }: { db: Database }) {
           if (status) applyStatus(detailJob.id, status);
         } else if (input === "u" && detailJob) {
           undoStatus(detailJob.id);
+        } else if (input === "d" && detailJob) {
+          deleteApp(detailJob.id);
         } else if (input === "C" && detailJob) {
           clearHistory(detailJob.id);
         }
@@ -378,6 +405,10 @@ export function App({ db }: { db: Database }) {
       }
       if (input === "u" && selected) {
         undoStatus(selected.id);
+        return;
+      }
+      if (input === "d" && selected) {
+        deleteApp(selected.id);
         return;
       }
     },

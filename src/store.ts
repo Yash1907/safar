@@ -66,6 +66,7 @@ export type Action =
   | { type: "UPDATE_NOTES_DRAFT"; text: string }
   | { type: "CANCEL_EDIT_NOTES" }
   | { type: "COMMIT_EDIT_NOTES" }
+  | { type: "DELETE_APPLICATION"; jobId: number }
   | { type: "SHEETS_SYNC_START" }
   | { type: "SHEETS_SYNC_DONE"; message: string };
 
@@ -179,6 +180,16 @@ export function reducer(state: AppState, action: Action): AppState {
       return { ...state, notesEditing: false, notesDraft: "" };
     case "COMMIT_EDIT_NOTES":
       return { ...state, notesEditing: false };
+    case "DELETE_APPLICATION":
+      return {
+        ...state,
+        jobs: state.jobs.map((j) =>
+          j.id === action.jobId
+            ? { ...j, status: null, notes: null, updatedAt: null }
+            : j,
+        ),
+        trackedJobs: state.trackedJobs.filter((j) => j.id !== action.jobId),
+      };
     case "SHEETS_SYNC_START":
       return { ...state, sheetsSyncStatus: "syncing", statusMessage: "pushing to Google Sheets…" };
     case "SHEETS_SYNC_DONE":

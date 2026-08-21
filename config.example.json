@@ -39,8 +39,8 @@
   },
   "sheets": {
     "enabled": true,
-    "spreadsheetId": "1AbCdEfGhIjKlMnOpQrStUvWxYz-your-sheet-id",
-    "sheetName": "Tracker",
-    "serviceAccountKeyPath": "~/.config/safar/gcp-service-account.json"
+    "spreadsheetId": "id-slug",
+    "sheetName": "Full-time Job Tracker",
+    "serviceAccountKeyPath": "~/path/to/json"
   }
 }

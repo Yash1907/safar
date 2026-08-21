@@ -68,8 +68,8 @@ export function Tracker({
         );
       })}
       <Text dimColor>
-        j/k/^d/^u/g/G move · enter detail · o open · s/a status · u undo · r sync · S sheets · q
-        quit
+        j/k/^d/^u/g/G move · enter detail · o open · s/a status · d delete · u undo · r sync · S
+        sheets · q quit
       </Text>
     </Box>
   );

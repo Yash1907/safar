@@ -6,9 +6,14 @@ import {
   setStatus,
   setNotes,
   undoLastStatus,
+  deleteApplication,
+  untrackJob,
   getStatusHistory,
   clearStatusHistory,
+  getJob,
+  listTrackedJobs,
 } from "../src/db/repo.ts";
+import { reducer, initialState } from "../src/store.ts";
 import type { RawJob } from "../src/sources/types.ts";
 
 function freshDbWithJob(): { db: Database; jobId: number } {
@@ -207,3 +212,138 @@ describe("clearStatusHistory", () => {
     expect(app.status).toBe("interviewing");
   });
 });
+
+describe("deleteApplication / untrackJob", () => {
+  test("deletes the application row and all status_history entries", () => {
+    const { db, jobId } = freshDbWithJob();
+    setStatus(db, jobId, "applied", 100);
+    setStatus(db, jobId, "interviewing", 200);
+    setNotes(db, jobId, "referral from Alice", 250);
+
+    const deleted = deleteApplication(db, jobId);
+    expect(deleted).toBe(true);
+
+    const job = getJob(db, jobId)!;
+    expect(job.status).toBeNull();
+    expect(job.notes).toBeNull();
+    expect(job.updatedAt).toBeNull();
+
+    expect(getStatusHistory(db, jobId)).toEqual([]);
+    expect(listTrackedJobs(db)).toEqual([]);
+  });
+
+  test("returns false when job is not tracked and is a no-op", () => {
+    const { db, jobId } = freshDbWithJob();
+    expect(deleteApplication(db, jobId)).toBe(false);
+  });
+
+  test("untrackJob alias works identically to deleteApplication", () => {
+    const { db, jobId } = freshDbWithJob();
+    setStatus(db, jobId, "saved", 100);
+
+    expect(untrackJob(db, jobId)).toBe(true);
+
+    const job = getJob(db, jobId)!;
+    expect(job.status).toBeNull();
+    expect(job.notes).toBeNull();
+  });
+
+  test("works on a job that only had notes set implicitly creating saved status", () => {
+    const { db, jobId } = freshDbWithJob();
+    setNotes(db, jobId, "just a note", 100);
+
+    expect(deleteApplication(db, jobId)).toBe(true);
+
+    const job = getJob(db, jobId)!;
+    expect(job.status).toBeNull();
+    expect(job.notes).toBeNull();
+    expect(getStatusHistory(db, jobId)).toEqual([]);
+  });
+
+  test("only deletes target job's application and history, preserving other tracked jobs", () => {
+    const db = new Database(":memory:");
+    migrate(db);
+    const raw = (id: string) => ({
+      sourceId: "fake",
+      sourceJobId: id,
+      company: `Acme ${id}`,
+      title: "Engineer",
+      url: "https://example.com",
+      locations: ["Remote"],
+    });
+    upsertJob(db, raw("1"), 100);
+    upsertJob(db, raw("2"), 100);
+    const [jobA, jobB] = db.query<{ id: number }, []>("SELECT id FROM jobs ORDER BY id").all();
+
+    setStatus(db, jobA!.id, "applied", 100);
+    setStatus(db, jobB!.id, "offer", 200);
+
+    expect(deleteApplication(db, jobA!.id)).toBe(true);
+
+    expect(getJob(db, jobA!.id)!.status).toBeNull();
+    expect(getStatusHistory(db, jobA!.id)).toEqual([]);
+
+    expect(getJob(db, jobB!.id)!.status).toBe("offer");
+    expect(getStatusHistory(db, jobB!.id)).toHaveLength(1);
+    expect(listTrackedJobs(db)).toHaveLength(1);
+    expect(listTrackedJobs(db)[0]!.id).toBe(jobB!.id);
+  });
+
+  test("store reducer handles DELETE_APPLICATION by clearing status/notes and removing from trackedJobs", () => {
+    const state = initialState();
+    const mockJobA = {
+      id: 1,
+      sourceId: "fake",
+      sourceJobId: "1",
+      company: "Acme",
+      title: "SWE",
+      url: "https://example.com",
+      locations: ["SF"],
+      workModel: null,
+      datePosted: null,
+      active: true,
+      extra: {},
+      firstSeenAt: 100,
+      lastSeenAt: 100,
+      status: "applied" as const,
+      notes: "some notes",
+      updatedAt: 150,
+    };
+    const mockJobB = {
+      id: 2,
+      sourceId: "fake",
+      sourceJobId: "2",
+      company: "Beta",
+      title: "SWE",
+      url: "https://example.com",
+      locations: ["NY"],
+      workModel: null,
+      datePosted: null,
+      active: true,
+      extra: {},
+      firstSeenAt: 100,
+      lastSeenAt: 100,
+      status: "interviewing" as const,
+      notes: null,
+      updatedAt: 200,
+    };
+
+    const stateWithJobs = {
+      ...state,
+      jobs: [mockJobA, mockJobB],
+      trackedJobs: [mockJobA, mockJobB],
+    };
+
+    const nextState = reducer(stateWithJobs, { type: "DELETE_APPLICATION", jobId: 1 });
+
+    expect(nextState.jobs[0]!.status).toBeNull();
+    expect(nextState.jobs[0]!.notes).toBeNull();
+    expect(nextState.jobs[0]!.updatedAt).toBeNull();
+
+    expect(nextState.jobs[1]!.status).toBe("interviewing");
+
+    expect(nextState.trackedJobs).toHaveLength(1);
+    expect(nextState.trackedJobs[0]!.id).toBe(2);
+  });
+});
+

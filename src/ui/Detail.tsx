@@ -8,10 +8,10 @@ import { NotesEditor } from "./NotesEditor.tsx";
 
 /**
  * §3 View 2 — Detail: full job info, application status, free-text notes
- * (multi-line), and a status-history timeline. `1-7` set status, `u` undo,
- * `C` clear history (wipes the timeline only — status/notes untouched),
- * `n` edit notes, `esc` back — all handled in app.tsx's keymap; this
- * component is display + the notes editor only.
+ * (multi-line), and a status-history timeline. `1-7` set status, `d` delete,
+ * `u` undo, `C` clear history (wipes the timeline only — status/notes
+ * untouched), `n` edit notes, `esc` back — all handled in app.tsx's
+ * keymap; this component is display + the notes editor only.
  */
 export function Detail({
   job,
@@ -81,7 +81,7 @@ export function Detail({
 
       <Box marginTop={1}>
         <Text dimColor>
-          1-7 set status · u undo · C clear history · o open · n edit notes · esc back
+          1-7 set status · d delete · u undo · C clear history · o open · n edit notes · esc back
         </Text>
       </Box>
     </Box>

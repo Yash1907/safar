@@ -48,8 +48,8 @@ export function Browse({
         visibleRows={visibleRows}
       />
       <Text dimColor>
-        j/k/^d/^u/g/G move · / filter · enter detail · o open · s/a status · u undo · r sync · S
-        sheets · q quit
+        j/k/^d/^u/g/G move · / filter · enter detail · o open · s/a status · d delete · u undo · r
+        sync · S sheets · q quit
       </Text>
     </Box>
   );

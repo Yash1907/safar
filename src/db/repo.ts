@@ -235,6 +235,22 @@ export function setNotes(db: Database, jobId: number, notes: string, now: number
   })();
 }
 
+/**
+ * Completely removes tracking for a job: deletes its applications row and
+ * all status_history entries, restoring it to untracked (status = null, notes = null)
+ * — as if the user never applied or saved it (§ "delete jobs from the browse view so that it's like i never applied").
+ * Returns true if an application or history was deleted, false if the job was not tracked.
+ */
+export function deleteApplication(db: Database, jobId: number): boolean {
+  return db.transaction(() => {
+    const res1 = db.query("DELETE FROM applications WHERE job_id = ?").run(jobId);
+    const res2 = db.query("DELETE FROM status_history WHERE job_id = ?").run(jobId);
+    return res1.changes > 0 || res2.changes > 0;
+  })();
+}
+
+export const untrackJob = deleteApplication;
+
 export function listJobs(db: Database, filter: JobFilter = {}): JobRecord[] {
   const clauses: string[] = [];
   const params: unknown[] = [];
