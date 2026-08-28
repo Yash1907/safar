@@ -1,10 +1,18 @@
-import { describe, expect, test, afterEach } from "bun:test";
+import { describe, expect, test, afterEach, beforeEach } from "bun:test";
+import { Database } from "bun:sqlite";
+import { migrate } from "../src/db/schema.ts";
 import {
   rowsForSheet,
   clearSheet,
   writeSheet,
+  readSheet,
   pushTrackedJobsToSheet,
+  pullTrackedJobsFromSheet,
+  parseSheetRows,
+  normalizeStatus,
+  applySheetJobsToDb,
 } from "../src/sheets.ts";
+import { listTrackedJobs, getJob, getStatusHistory, setStatus, setNotes } from "../src/db/repo.ts";
 import type { JobRecord } from "../src/db/repo.ts";
 
 function job(overrides: Partial<JobRecord> = {}): JobRecord {
@@ -136,4 +144,364 @@ describe("Sheets REST calls (request shape, no real network)", () => {
     expect(calls).toEqual(["POST clear", "PUT write"]);
     expect(result.rowCount).toBe(1);
   });
+
+  test("readSheet GETs values with a bearer token and returns values array", async () => {
+    let captured: { url: string; init: RequestInit } | null = null;
+    globalThis.fetch = (async (url: string, init: RequestInit) => {
+      captured = { url: String(url), init };
+      return new Response(
+        JSON.stringify({
+          values: [
+            ["Company", "Title", "Status"],
+            ["Acme", "SWE", "applied"],
+          ],
+        }),
+        { status: 200 },
+      );
+    }) as unknown as typeof fetch;
+
+    const rows = await readSheet("tok123", "sheet-id", "Tracker");
+
+    expect(captured!.url).toBe(
+      "https://sheets.googleapis.com/v4/spreadsheets/sheet-id/values/Tracker",
+    );
+    expect(captured!.init.method).toBe("GET");
+    expect((captured!.init.headers as Record<string, string>).Authorization).toBe("Bearer tok123");
+    expect(rows).toEqual([
+      ["Company", "Title", "Status"],
+      ["Acme", "SWE", "applied"],
+    ]);
+  });
+
+  test("readSheet returns empty array when values is undefined", async () => {
+    globalThis.fetch = (async () =>
+      new Response(JSON.stringify({}), { status: 200 })) as unknown as typeof fetch;
+
+    const rows = await readSheet("tok", "sheet-id", "Tracker");
+    expect(rows).toEqual([]);
+  });
+
+  test("pullTrackedJobsFromSheet throws if sheet is completely empty", async () => {
+    globalThis.fetch = (async () =>
+      new Response(JSON.stringify({ values: [] }), { status: 200 })) as unknown as typeof fetch;
+
+    const db = new Database(":memory:");
+    migrate(db);
+
+    await expect(pullTrackedJobsFromSheet("tok", "sheet-id", "Tracker", db)).rejects.toThrow(
+      /is empty/,
+    );
+  });
 });
+
+describe("normalizeStatus", () => {
+  test("normalizes status casing and whitespace", () => {
+    expect(normalizeStatus("APPLIED")).toBe("applied");
+    expect(normalizeStatus("  Saved  ")).toBe("saved");
+    expect(normalizeStatus("oa")).toBe("oa");
+    expect(normalizeStatus("OA")).toBe("oa");
+  });
+
+  test("recognizes common aliases", () => {
+    expect(normalizeStatus("interview")).toBe("interviewing");
+    expect(normalizeStatus("online assessment")).toBe("oa");
+    expect(normalizeStatus("offered")).toBe("offer");
+    expect(normalizeStatus("reject")).toBe("rejected");
+    expect(normalizeStatus("withdrew")).toBe("withdrawn");
+  });
+
+  test("returns null for invalid or empty status", () => {
+    expect(normalizeStatus("")).toBeNull();
+    expect(normalizeStatus("unknown")).toBeNull();
+    expect(normalizeStatus("not a status")).toBeNull();
+  });
+});
+
+describe("parseSheetRows", () => {
+  test("returns empty array for empty rows", () => {
+    expect(parseSheetRows([])).toEqual([]);
+  });
+
+  test("parses rows matching standard rowsForSheet format", () => {
+    const exportedRows = rowsForSheet([
+      job({
+        company: "Stripe",
+        title: "Frontend Engineer",
+        status: "interviewing",
+        notes: "round 2 on monday",
+        locations: ["Remote", "SF"],
+        url: "https://stripe.com/jobs/1",
+        datePosted: 1_700_000_000,
+        updatedAt: 1_700_000_100,
+      }),
+    ]);
+
+    const parsed = parseSheetRows(exportedRows);
+    expect(parsed).toHaveLength(1);
+    expect(parsed[0]!.company).toBe("Stripe");
+    expect(parsed[0]!.title).toBe("Frontend Engineer");
+    expect(parsed[0]!.status).toBe("interviewing");
+    expect(parsed[0]!.notes).toBe("round 2 on monday");
+    expect(parsed[0]!.locations).toEqual(["Remote", "SF"]);
+    expect(parsed[0]!.url).toBe("https://stripe.com/jobs/1");
+    // datePosted in sheets is formatted as YYYY-MM-DD, so it parses to UTC midnight
+    expect(parsed[0]!.datePosted).toBe(1_699_920_000);
+    expect(parsed[0]!.updatedAt).toBe(1_700_000_100);
+  });
+
+  test("skips rows with missing or invalid status", () => {
+    const rows = [
+      ["Company", "Title", "Status", "Notes", "Location", "Site", "URL"],
+      ["Valid", "SWE", "applied", "", "", "", "https://valid.com"],
+      ["Invalid", "SWE", "invalid_status", "", "", "", "https://invalid.com"],
+      ["NoStatus", "SWE", "", "", "", "", "https://nostatus.com"],
+    ];
+    const parsed = parseSheetRows(rows);
+    expect(parsed).toHaveLength(1);
+    expect(parsed[0]!.company).toBe("Valid");
+  });
+
+  test("handles reordered columns via dynamic header detection", () => {
+    const rows = [
+      ["Status", "URL", "Company", "Title"],
+      ["applied", "https://reordered.com", "Acme", "Lead SWE"],
+    ];
+    const parsed = parseSheetRows(rows);
+    expect(parsed).toHaveLength(1);
+    expect(parsed[0]!.company).toBe("Acme");
+    expect(parsed[0]!.title).toBe("Lead SWE");
+    expect(parsed[0]!.status).toBe("applied");
+    expect(parsed[0]!.url).toBe("https://reordered.com");
+  });
+
+  test("tolerates rows with fewer cells than header", () => {
+    const rows = [
+      ["Company", "Title", "Status", "Notes", "Location", "Site", "URL", "Date Posted", "Last Updated"],
+      ["Acme", "SWE", "saved"], // only 3 cells
+    ];
+    const parsed = parseSheetRows(rows);
+    expect(parsed).toHaveLength(1);
+    expect(parsed[0]!.company).toBe("Acme");
+    expect(parsed[0]!.status).toBe("saved");
+    expect(parsed[0]!.notes).toBe("");
+    expect(parsed[0]!.url).toBe("");
+  });
+});
+
+describe("applySheetJobsToDb", () => {
+  let db: Database;
+
+  beforeEach(() => {
+    db = new Database(":memory:");
+    migrate(db);
+  });
+
+  test("matches existing job by exact URL and updates application and status_history", () => {
+    db.query(
+      `INSERT INTO jobs (source_id, source_job_id, company, title, url, locations, first_seen_at, last_seen_at)
+       VALUES ('simplify-newgrad', 'job-1', 'Acme', 'SWE', 'https://acme.com/job1', '["Remote"]', 100, 100)`,
+    ).run();
+
+    const result = applySheetJobsToDb(db, [
+      {
+        company: "Acme",
+        title: "SWE",
+        status: "applied",
+        notes: "referred by Alice",
+        locations: ["Remote"],
+        url: "https://acme.com/job1",
+        datePosted: null,
+        updatedAt: 1_700_000_000,
+      },
+    ]);
+
+    expect(result.pulledCount).toBe(1);
+    expect(result.createdJobCount).toBe(0);
+    expect(result.untrackedCount).toBe(0);
+
+    const tracked = listTrackedJobs(db);
+    expect(tracked).toHaveLength(1);
+    expect(tracked[0]!.company).toBe("Acme");
+    expect(tracked[0]!.status).toBe("applied");
+    expect(tracked[0]!.notes).toBe("referred by Alice");
+    expect(tracked[0]!.updatedAt).toBe(1_700_000_000);
+
+    const history = getStatusHistory(db, tracked[0]!.id);
+    expect(history).toHaveLength(1);
+    expect(history[0]!.status).toBe("applied");
+  });
+
+  test("matches existing job by company and title when URL does not match", () => {
+    db.query(
+      `INSERT INTO jobs (source_id, source_job_id, company, title, url, locations, first_seen_at, last_seen_at)
+       VALUES ('simplify-newgrad', 'job-2', 'Stripe', 'Fullstack Engineer', 'https://stripe.com/old-url', '["NYC"]', 100, 100)`,
+    ).run();
+
+    const result = applySheetJobsToDb(db, [
+      {
+        company: "Stripe",
+        title: "Fullstack Engineer",
+        status: "oa",
+        notes: "hacker rank received",
+        locations: ["NYC"],
+        url: "https://stripe.com/new-url",
+        datePosted: null,
+        updatedAt: 1_700_000_500,
+      },
+    ]);
+
+    expect(result.pulledCount).toBe(1);
+    expect(result.createdJobCount).toBe(0);
+
+    const tracked = listTrackedJobs(db);
+    expect(tracked).toHaveLength(1);
+    expect(tracked[0]!.company).toBe("Stripe");
+    expect(tracked[0]!.status).toBe("oa");
+    expect(tracked[0]!.notes).toBe("hacker rank received");
+  });
+
+  test("creates missing job with source_id='sheets' when not found locally", () => {
+    const result = applySheetJobsToDb(db, [
+      {
+        company: "NewCorp",
+        title: "Staff Platform Engineer",
+        status: "saved",
+        notes: "found on LinkedIn",
+        locations: ["Austin, TX", "Remote"],
+        url: "https://newcorp.com/careers/999",
+        datePosted: 1_699_000_000,
+        updatedAt: 1_700_000_000,
+      },
+    ]);
+
+    expect(result.pulledCount).toBe(1);
+    expect(result.createdJobCount).toBe(1);
+
+    const tracked = listTrackedJobs(db);
+    expect(tracked).toHaveLength(1);
+    expect(tracked[0]!.sourceId).toBe("sheets");
+    expect(tracked[0]!.company).toBe("NewCorp");
+    expect(tracked[0]!.title).toBe("Staff Platform Engineer");
+    expect(tracked[0]!.status).toBe("saved");
+    expect(tracked[0]!.locations).toEqual(["Austin, TX", "Remote"]);
+  });
+
+  test("appends status_history when status transitions on already-tracked job", () => {
+    db.query(
+      `INSERT INTO jobs (source_id, source_job_id, company, title, url, locations, first_seen_at, last_seen_at)
+       VALUES ('simplify-newgrad', 'job-1', 'Acme', 'SWE', 'https://acme.com/job1', '["Remote"]', 100, 100)`,
+    ).run();
+
+    setStatus(db, 1, "saved", 1000);
+
+    applySheetJobsToDb(db, [
+      {
+        company: "Acme",
+        title: "SWE",
+        status: "interviewing",
+        notes: "screening passed",
+        locations: ["Remote"],
+        url: "https://acme.com/job1",
+        datePosted: null,
+        updatedAt: 2000,
+      },
+    ]);
+
+    const history = getStatusHistory(db, 1);
+    expect(history.map((h) => h.status)).toEqual(["saved", "interviewing"]);
+  });
+
+  test("does not duplicate status_history entry when status is unchanged (only notes updated)", () => {
+    db.query(
+      `INSERT INTO jobs (source_id, source_job_id, company, title, url, locations, first_seen_at, last_seen_at)
+       VALUES ('simplify-newgrad', 'job-1', 'Acme', 'SWE', 'https://acme.com/job1', '["Remote"]', 100, 100)`,
+    ).run();
+
+    setStatus(db, 1, "applied", 1000);
+
+    applySheetJobsToDb(db, [
+      {
+        company: "Acme",
+        title: "SWE",
+        status: "applied",
+        notes: "updated notes only",
+        locations: ["Remote"],
+        url: "https://acme.com/job1",
+        datePosted: null,
+        updatedAt: 2000,
+      },
+    ]);
+
+    const history = getStatusHistory(db, 1);
+    expect(history).toHaveLength(1);
+    expect(history[0]!.status).toBe("applied");
+
+    const job = getJob(db, 1);
+    expect(job!.notes).toBe("updated notes only");
+    expect(job!.updatedAt).toBe(2000);
+  });
+
+  test("Mirror Sheets: untracks local jobs that are NOT present in the sheet", () => {
+    db.query(
+      `INSERT INTO jobs (source_id, source_job_id, company, title, url, locations, first_seen_at, last_seen_at)
+       VALUES ('simplify-newgrad', 'job-1', 'Acme', 'SWE', 'https://acme.com/job1', '[]', 100, 100),
+              ('simplify-newgrad', 'job-2', 'Beta', 'PM', 'https://beta.com/job2', '[]', 100, 100)`,
+    ).run();
+
+    setStatus(db, 1, "applied", 1000);
+    setStatus(db, 2, "saved", 1000);
+
+    expect(listTrackedJobs(db)).toHaveLength(2);
+
+    // Sheet only contains Acme (job-1). Beta (job-2) was deleted/untracked on another device.
+    const result = applySheetJobsToDb(db, [
+      {
+        company: "Acme",
+        title: "SWE",
+        status: "applied",
+        notes: "",
+        locations: [],
+        url: "https://acme.com/job1",
+        datePosted: null,
+        updatedAt: 1500,
+      },
+    ]);
+
+    expect(result.pulledCount).toBe(1);
+    expect(result.untrackedCount).toBe(1);
+
+    const remainingTracked = listTrackedJobs(db);
+    expect(remainingTracked).toHaveLength(1);
+    expect(remainingTracked[0]!.id).toBe(1);
+
+    // Beta's job record in `jobs` is still preserved, but its application/history is untracked
+    const betaJob = getJob(db, 2);
+    expect(betaJob).not.toBeNull();
+    expect(betaJob!.status).toBeNull();
+    expect(getStatusHistory(db, 2)).toHaveLength(0);
+  });
+});
+
+describe("store reducer sheets actions", () => {
+  test("SHEETS_PULL_START updates statusMessage and sheetsSyncStatus", () => {
+    const { reducer, initialState } = require("../src/store.ts");
+    const state = initialState();
+    const nextState = reducer(state, { type: "SHEETS_PULL_START" });
+
+    expect(nextState.sheetsSyncStatus).toBe("syncing");
+    expect(nextState.statusMessage).toBe("pulling from Google Sheets…");
+  });
+
+  test("SHEETS_SYNC_DONE updates statusMessage and resets sheetsSyncStatus", () => {
+    const { reducer, initialState } = require("../src/store.ts");
+    const state = { ...initialState(), sheetsSyncStatus: "syncing" as const };
+    const nextState = reducer(state, {
+      type: "SHEETS_SYNC_DONE",
+      message: "pulled 5 tracked jobs from Google Sheets",
+    });
+
+    expect(nextState.sheetsSyncStatus).toBe("idle");
+    expect(nextState.statusMessage).toBe("pulled 5 tracked jobs from Google Sheets");
+  });
+});
+

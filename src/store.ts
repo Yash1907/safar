@@ -68,6 +68,7 @@ export type Action =
   | { type: "COMMIT_EDIT_NOTES" }
   | { type: "DELETE_APPLICATION"; jobId: number }
   | { type: "SHEETS_SYNC_START" }
+  | { type: "SHEETS_PULL_START" }
   | { type: "SHEETS_SYNC_DONE"; message: string };
 
 export function initialState(): AppState {
@@ -192,6 +193,8 @@ export function reducer(state: AppState, action: Action): AppState {
       };
     case "SHEETS_SYNC_START":
       return { ...state, sheetsSyncStatus: "syncing", statusMessage: "pushing to Google Sheets…" };
+    case "SHEETS_PULL_START":
+      return { ...state, sheetsSyncStatus: "syncing", statusMessage: "pulling from Google Sheets…" };
     case "SHEETS_SYNC_DONE":
       return { ...state, sheetsSyncStatus: "idle", statusMessage: action.message };
     default:

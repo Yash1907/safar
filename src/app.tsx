@@ -24,7 +24,7 @@ import { groupTrackedJobs, flattenGroups } from "./tracker.ts";
 import { openUrl } from "./open.ts";
 import { loadConfig } from "./config.ts";
 import { loadServiceAccountKey, getAccessToken } from "./google-auth.ts";
-import { pushTrackedJobsToSheet, SPREADSHEETS_SCOPE } from "./sheets.ts";
+import { pushTrackedJobsToSheet, pullTrackedJobsFromSheet, SPREADSHEETS_SCOPE } from "./sheets.ts";
 import { Header } from "./ui/Header.tsx";
 import { Browse } from "./ui/Browse.tsx";
 import { Detail } from "./ui/Detail.tsx";
@@ -298,6 +298,44 @@ export function App({ db }: { db: Database }) {
     }
   }, [db]);
 
+  const runSheetsPull = useCallback(async () => {
+    dispatch({ type: "SHEETS_PULL_START" });
+    try {
+      const config = loadConfig().sheets;
+      if (!config) {
+        throw new Error('no "sheets" section in ~/.config/safar/config.json');
+      }
+      if (!config.enabled) {
+        dispatch({ type: "SHEETS_SYNC_DONE", message: "sheets sync is disabled in config" });
+        return;
+      }
+      const key = loadServiceAccountKey(config.serviceAccountKeyPath);
+      const token = await getAccessToken(key, SPREADSHEETS_SCOPE);
+      const { pulledCount, untrackedCount } = await pullTrackedJobsFromSheet(
+        token,
+        config.spreadsheetId,
+        config.sheetName,
+        db,
+      );
+      refreshTrackedJobs();
+      const activeFilter = toDbActiveFilter(activeModeRef.current);
+      dispatch({ type: "SET_JOBS", jobs: listJobs(db, { active: activeFilter }) });
+      if (state.detailJobId !== null) {
+        dispatch({ type: "SET_STATUS_HISTORY", entries: getStatusHistory(db, state.detailJobId) });
+      }
+      const untrackedPart = untrackedCount > 0 ? ` (${untrackedCount} untracked)` : "";
+      dispatch({
+        type: "SHEETS_SYNC_DONE",
+        message: `pulled ${pulledCount} tracked jobs from Google Sheets${untrackedPart}`,
+      });
+    } catch (err) {
+      dispatch({
+        type: "SHEETS_SYNC_DONE",
+        message: `sheets pull failed — ${err instanceof Error ? err.message : err}`,
+      });
+    }
+  }, [db, refreshTrackedJobs, state.detailJobId]);
+
   const commitNotes = useCallback(() => {
     if (!detailJob) return;
     setNotes(db, detailJob.id, state.notesDraft, Math.floor(Date.now() / 1000));
@@ -328,6 +366,10 @@ export function App({ db }: { db: Database }) {
       }
       if (input === "S") {
         void runSheetsSync();
+        return;
+      }
+      if (input === "p") {
+        void runSheetsPull();
         return;
       }
 

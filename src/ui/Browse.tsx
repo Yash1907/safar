@@ -49,7 +49,7 @@ export function Browse({
       />
       <Text dimColor>
         j/k/^d/^u/g/G move · / filter · enter detail · o open · s/a status · d delete · u undo · r
-        sync · S sheets · q quit
+        sync · S push · p pull · q quit
       </Text>
     </Box>
   );
