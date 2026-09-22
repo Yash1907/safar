@@ -50,7 +50,23 @@ Each source is an *adapter* implementing one interface. v1 ships two adapters; m
 - Rows disappearing from the README is normal (7-day window) — absence does **not** mean the job is dead. **v1 rule: the jobright adapter never touches `active`** — jobright jobs stay `active = 1` and the UI shows their age instead. Auto-expiry heuristics are deferred.
 - Other jobright repos (`2026-Data-Analysis-New-Grad`, etc.) share the same format, so the adapter takes owner/repo as config → adding more is a config entry, not code.
 
-### 1.3 Adapter interface
+### 1.3 zapplyjobs (markdown adapter)
+
+- Repos: `zapplyjobs/New-Grad-Jobs-2027` and `zapplyjobs/Internships-2027`, default branch **`main`**.
+- Fetch `https://raw.githubusercontent.com/zapplyjobs/<repo>/main/README.md`.
+- Parses categorized tables under `<details><summary><h3>...</h3></summary>` tags. Table columns: `| Company | Role | Location | Posted | Visa | **Apply** |`.
+- **Parser rules:**
+  - Dynamic column detection from table headers (`Company`, `Role`/`Title`, `Location`, `Posted`, `Visa`/`Sponsor`, `Apply`/`Link`).
+  - Company cell: `**Company**`, `**[Company](url)**`, plain text, or `↳` (carry forward).
+  - Role cell: unescapes brackets and strips bold styling.
+  - Job URL: extracted from the Apply cell (`[<img ...>](https://zapply.jobs/l/d/<slug>)` or standard links).
+  - `sourceJobId`: extracted from the zapply slug `/l/d/<slug>`, with sha256 fallback.
+  - Category: extracted from `<summary><h3>` tags (e.g. `Software Engineering`, `Data, AI & Research`, `Business & Operations`) into `extra.category`.
+  - Visa: extracted from `Visa` column into `extra.sponsorship` and `extra.visa`.
+  - Posted: relative spans (`14m`, `6h`, `1d`, `2w`, etc.) or month-day dates.
+  - Work model: `remote`, `hybrid`, `onsite`, or undefined derived from location and title.
+
+### 1.4 Adapter interface
 
 ```ts
 interface SourceAdapter {

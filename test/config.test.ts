@@ -2,7 +2,7 @@ import { describe, expect, test } from "bun:test";
 import { writeFileSync, mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { loadConfig, defaultConfig } from "../src/config.ts";
+import { loadConfig, defaultConfig, resolveConfigPath } from "../src/config.ts";
 import { buildSources } from "../src/sources/registry.ts";
 
 function tmpConfigPath(contents: string): string {
@@ -103,6 +103,8 @@ describe("buildSources", () => {
     expect(sources.map((s) => s.id)).not.toContain("simplify-summer2026");
     expect(sources.map((s) => s.id)).toContain("simplify-newgrad");
     expect(sources.map((s) => s.id)).toContain("jobright-swe-2026");
+    expect(sources.map((s) => s.id)).toContain("zapply-newgrad-2027");
+    expect(sources.map((s) => s.id)).toContain("zapply-internships-2027");
   });
 
   test("adding a jobright repo is config-only — no code change needed", () => {
@@ -118,4 +120,39 @@ describe("buildSources", () => {
     const sources = buildSources(config);
     expect(sources.map((s) => s.id)).toContain("jobright-data-2026");
   });
+
+  test("adding or disabling a zapply repo is config-only", () => {
+    const config = defaultConfig();
+    config.sources.zapply[0]!.enabled = false;
+    config.sources.zapply.push({
+      id: "zapply-custom-swe",
+      displayName: "Zapply SWE Jobs",
+      owner: "zapplyjobs",
+      repo: "New-Grad-Software-Engineering-Jobs-2027",
+      branch: "main",
+      enabled: true,
+    });
+    const sources = buildSources(config);
+    expect(sources.map((s) => s.id)).not.toContain("zapply-newgrad-2027");
+    expect(sources.map((s) => s.id)).toContain("zapply-internships-2027");
+    expect(sources.map((s) => s.id)).toContain("zapply-custom-swe");
+  });
 });
+
+describe("resolveConfigPath", () => {
+  test("respects SAFAR_CONFIG environment variable when set", () => {
+    const custom = "C:\\custom\\path\\config.json";
+    process.env.SAFAR_CONFIG = custom;
+    try {
+      expect(resolveConfigPath()).toBe(custom);
+    } finally {
+      delete process.env.SAFAR_CONFIG;
+    }
+  });
+
+  test("falls back to standard path when no local or env override", () => {
+    const path = resolveConfigPath();
+    expect(path).toContain("config.json");
+  });
+});
+

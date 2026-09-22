@@ -18,20 +18,77 @@ export interface SheetsConfig {
   serviceAccountKeyPath: string;
 }
 
+export interface DiscordConfig {
+  webhookUrl: string;
+  eodSummaryTime?: string; // e.g. "18:00" (default: "18:00")
+}
+
+export interface EducationConfig {
+  school: string;
+  degree?: string; // e.g. "Bachelor of Science"
+  discipline?: string; // e.g. "Computer Science"
+  graduationYear?: number; // e.g. 2026
+  graduationMonth?: number; // 1-12
+  gpa?: string; // e.g. "3.8"
+}
+
+export interface DemographicsConfig {
+  gender?: string; // default "Decline to Self-Identify"
+  race?: string; // default "Decline to Self-Identify"
+  veteran?: string; // default "Decline to Self-Identify"
+  disability?: string; // default "Decline to Self-Identify"
+}
+
+export interface ProfileConfig {
+  firstName: string;
+  lastName: string;
+  email: string;
+  phone: string;
+  resumePath: string;
+  linkedinUrl?: string;
+  githubUrl?: string;
+  portfolioUrl?: string;
+  address?: {
+    city?: string;
+    state?: string;
+    country?: string;
+    postalCode?: string;
+  };
+  education?: EducationConfig;
+  workAuthorization?: {
+    authorizedInUS?: boolean; // default true
+    requiresSponsorship?: boolean; // default false
+  };
+  demographics?: DemographicsConfig;
+}
+
+export interface AutoApplyConfig {
+  enabled?: boolean; // default true
+  lookbackDays?: number; // default 3
+  dryRun?: boolean; // default false
+}
+
 export interface SafarConfig {
   sources: {
     simplify: RepoSourceConfig[];
     jobright: RepoSourceConfig[];
+    zapply: RepoSourceConfig[];
   };
   /** One-way push of tracked jobs to Google Sheets (§ "sync ... with google sheets"). null = not configured. */
   sheets: SheetsConfig | null;
+  /** Discord webhook notifications for auto-applied jobs and daily summary. null = not configured. */
+  discord: DiscordConfig | null;
+  /** Profile details used by auto-applier for Greenhouse and Ashby forms. null = not configured. */
+  profile: ProfileConfig | null;
+  /** Auto-applier runtime settings. */
+  autoApply: AutoApplyConfig;
 }
 
 /**
  * §5 M4: defaults match §1 — SimplifyJobs New-Grad-Positions always on,
  * Summer2026-Internships available but off by default ("optionally" — §1.1),
- * jobright's 2026 SWE New Grad repo on by default. Adding another jobright
- * (or Simplify) repo is a config entry here, not code (§1.2).
+ * jobright's 2026 SWE New Grad repo on by default, and zapplyjobs 2027 New Grad
+ * and Internships repos on by default.
  */
 export function defaultConfig(): SafarConfig {
   return {
@@ -64,12 +121,50 @@ export function defaultConfig(): SafarConfig {
           enabled: true,
         },
       ],
+      zapply: [
+        {
+          id: "zapply-newgrad-2027",
+          displayName: "Zapply New Grad 2027",
+          owner: "zapplyjobs",
+          repo: "New-Grad-Jobs-2027",
+          branch: "main",
+          enabled: true,
+        },
+        {
+          id: "zapply-internships-2027",
+          displayName: "Zapply Internships 2027",
+          owner: "zapplyjobs",
+          repo: "Internships-2027",
+          branch: "main",
+          enabled: true,
+        },
+      ],
     },
     sheets: null,
+    discord: null,
+    profile: null,
+    autoApply: {
+      enabled: true,
+      lookbackDays: 3,
+      dryRun: false,
+    },
   };
 }
 
 export function resolveConfigPath(): string {
+  if (process.env.SAFAR_CONFIG) {
+    return process.env.SAFAR_CONFIG;
+  }
+  const localPath = join(process.cwd(), "config.json");
+  if (existsSync(localPath)) {
+    return localPath;
+  }
+  if (process.platform === "win32" && process.env.APPDATA) {
+    const winPath = join(process.env.APPDATA, "safar", "config.json");
+    if (existsSync(winPath)) {
+      return winPath;
+    }
+  }
   return join(homedir(), ".config", "safar", "config.json");
 }
 
@@ -84,6 +179,98 @@ function parseSheetsConfig(raw: unknown): SheetsConfig | null {
     spreadsheetId: r.spreadsheetId,
     sheetName: typeof r.sheetName === "string" ? r.sheetName : "Tracker",
     serviceAccountKeyPath: r.serviceAccountKeyPath,
+  };
+}
+
+function parseDiscordConfig(raw: unknown): DiscordConfig | null {
+  if (!raw || typeof raw !== "object") return null;
+  const r = raw as Record<string, unknown>;
+  if (typeof r.webhookUrl !== "string" || !r.webhookUrl.trim()) return null;
+  return {
+    webhookUrl: r.webhookUrl.trim(),
+    eodSummaryTime: typeof r.eodSummaryTime === "string" ? r.eodSummaryTime.trim() : "18:00",
+  };
+}
+
+function parseProfileConfig(raw: unknown): ProfileConfig | null {
+  if (!raw || typeof raw !== "object") return null;
+  const r = raw as Record<string, any>;
+  if (
+    typeof r.firstName !== "string" ||
+    typeof r.lastName !== "string" ||
+    typeof r.email !== "string"
+  ) {
+    return null;
+  }
+  return {
+    firstName: r.firstName.trim(),
+    lastName: r.lastName.trim(),
+    email: r.email.trim(),
+    phone: typeof r.phone === "string" ? r.phone.trim() : "",
+    resumePath: typeof r.resumePath === "string" ? r.resumePath.trim() : "",
+    linkedinUrl: typeof r.linkedinUrl === "string" ? r.linkedinUrl.trim() : undefined,
+    githubUrl: typeof r.githubUrl === "string" ? r.githubUrl.trim() : undefined,
+    portfolioUrl: typeof r.portfolioUrl === "string" ? r.portfolioUrl.trim() : undefined,
+    address:
+      r.address && typeof r.address === "object"
+        ? {
+            city: typeof r.address.city === "string" ? r.address.city.trim() : undefined,
+            state: typeof r.address.state === "string" ? r.address.state.trim() : undefined,
+            country: typeof r.address.country === "string" ? r.address.country.trim() : undefined,
+            postalCode:
+              typeof r.address.postalCode === "string"
+                ? r.address.postalCode.trim()
+                : undefined,
+          }
+        : undefined,
+    education:
+      r.education && typeof r.education === "object"
+        ? {
+            school: String(r.education.school || "").trim(),
+            degree: typeof r.education.degree === "string" ? r.education.degree.trim() : undefined,
+            discipline:
+              typeof r.education.discipline === "string"
+                ? r.education.discipline.trim()
+                : undefined,
+            graduationYear:
+              typeof r.education.graduationYear === "number"
+                ? r.education.graduationYear
+                : undefined,
+            graduationMonth:
+              typeof r.education.graduationMonth === "number"
+                ? r.education.graduationMonth
+                : undefined,
+            gpa: r.education.gpa ? String(r.education.gpa).trim() : undefined,
+          }
+        : undefined,
+    workAuthorization:
+      r.workAuthorization && typeof r.workAuthorization === "object"
+        ? {
+            authorizedInUS: r.workAuthorization.authorizedInUS !== false,
+            requiresSponsorship: r.workAuthorization.requiresSponsorship === true,
+          }
+        : { authorizedInUS: true, requiresSponsorship: false },
+    demographics:
+      r.demographics && typeof r.demographics === "object"
+        ? {
+            gender: r.demographics.gender || "Decline to Self-Identify",
+            race: r.demographics.race || "Decline to Self-Identify",
+            veteran: r.demographics.veteran || "Decline to Self-Identify",
+            disability: r.demographics.disability || "Decline to Self-Identify",
+          }
+        : undefined,
+  };
+}
+
+function parseAutoApplyConfig(raw: unknown): AutoApplyConfig {
+  if (!raw || typeof raw !== "object") {
+    return { enabled: true, lookbackDays: 3, dryRun: false };
+  }
+  const r = raw as Record<string, unknown>;
+  return {
+    enabled: r.enabled !== false,
+    lookbackDays: typeof r.lookbackDays === "number" ? r.lookbackDays : 3,
+    dryRun: r.dryRun === true,
   };
 }
 
@@ -107,8 +294,14 @@ export function loadConfig(path: string = resolveConfigPath()): SafarConfig {
         jobright: Array.isArray(parsed?.sources?.jobright)
           ? parsed.sources.jobright
           : defaults.sources.jobright,
+        zapply: Array.isArray(parsed?.sources?.zapply)
+          ? parsed.sources.zapply
+          : defaults.sources.zapply,
       },
       sheets: parseSheetsConfig(parsed?.sheets),
+      discord: parseDiscordConfig(parsed?.discord),
+      profile: parseProfileConfig(parsed?.profile),
+      autoApply: parseAutoApplyConfig(parsed?.autoApply),
     };
   } catch (err) {
     console.warn(

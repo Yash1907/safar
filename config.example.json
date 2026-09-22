@@ -15,7 +15,7 @@
         "owner": "SimplifyJobs",
         "repo": "Summer2026-Internships",
         "branch": "dev",
-        "enabled": false
+        "enabled": true
       }
     ],
     "jobright": [
@@ -25,7 +25,7 @@
         "owner": "jobright-ai",
         "repo": "2026-Software-Engineer-New-Grad",
         "branch": "master",
-        "enabled": true
+        "enabled": false
       },
       {
         "id": "jobright-data-2026",
@@ -35,6 +35,24 @@
         "branch": "master",
         "enabled": false
       }
+    ],
+    "zapply": [
+      {
+        "id": "zapply-newgrad-2027",
+        "displayName": "Zapply New Grad 2027",
+        "owner": "zapplyjobs",
+        "repo": "New-Grad-Jobs-2027",
+        "branch": "main",
+        "enabled": false
+      },
+      {
+        "id": "zapply-internships-2027",
+        "displayName": "Zapply Internships 2027",
+        "owner": "zapplyjobs",
+        "repo": "Internships-2027",
+        "branch": "main",
+        "enabled": false
+      }
     ]
   },
   "sheets": {
@@ -42,5 +60,48 @@
     "spreadsheetId": "id-slug",
     "sheetName": "Full-time Job Tracker",
     "serviceAccountKeyPath": "~/path/to/json"
+  },
+  "discord": {
+    "webhookUrl": "https://discord.com/api/webhooks/YOUR_WEBHOOK_ID/YOUR_WEBHOOK_TOKEN",
+    "eodSummaryTime": "18:00"
+  },
+  "profile": {
+    "firstName": "John",
+    "lastName": "Doe",
+    "email": "johndoe@example.com",
+    "phone": "+1-555-123-4567",
+    "resumePath": "C:\\path\\to\\resume.pdf",
+    "linkedinUrl": "https://linkedin.com/in/johndoe",
+    "githubUrl": "https://github.com/johndoe",
+    "portfolioUrl": "https://johndoe.dev",
+    "address": {
+      "city": "San Francisco",
+      "state": "CA",
+      "country": "United States",
+      "postalCode": "94105"
+    },
+    "education": {
+      "school": "University of California, Berkeley",
+      "degree": "Bachelor of Science",
+      "discipline": "Computer Science",
+      "graduationYear": 2026,
+      "graduationMonth": 5,
+      "gpa": "3.85"
+    },
+    "workAuthorization": {
+      "authorizedInUS": true,
+      "requiresSponsorship": false
+    },
+    "demographics": {
+      "gender": "Decline to Self-Identify",
+      "race": "Decline to Self-Identify",
+      "veteran": "Decline to Self-Identify",
+      "disability": "Decline to Self-Identify"
+    }
+  },
+  "autoApply": {
+    "enabled": true,
+    "lookbackDays": 3,
+    "dryRun": false
   }
 }

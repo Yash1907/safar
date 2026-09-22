@@ -11,6 +11,7 @@ describe("detectJobSite", () => {
     );
     expect(detectJobSite("https://careers-kyocera.icims.com/jobs/3236/job").label).toBe("icims");
     expect(detectJobSite("https://jobright.ai/jobs/info/abc123?utm=1").label).toBe("jobright");
+    expect(detectJobSite("https://zapply.jobs/l/d/abc?s=1").label).toBe("zapply");
   });
 
   test("falls back to the domain segment for an unrecognized host", () => {

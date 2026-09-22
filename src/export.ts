@@ -21,7 +21,7 @@ const CSV_COLUMNS: (keyof JobRecord | "locationsCsv" | "extraCsv")[] = [
 
 function csvEscape(value: unknown): string {
   const s = value === null || value === undefined ? "" : String(value);
-  if (/[",\n]/.test(s)) return `"${s.replace(/"/g, '""')}"`;
+  if (/[",\r\n]/.test(s)) return `"${s.replace(/"/g, '""')}"`;
   return s;
 }
 

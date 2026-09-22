@@ -5,33 +5,71 @@ import { openDb, resolveDbPath, listJobs, listTrackedJobs } from "./db/repo.ts";
 import { defaultSources } from "./sources/registry.ts";
 import { syncAll, formatSyncSummary } from "./sync.ts";
 import { exportJobsToCsv, exportJobsToJson, formatFromPath } from "./export.ts";
-import { loadConfig } from "./config.ts";
+import { loadConfig, resolveConfigPath } from "./config.ts";
 import { loadServiceAccountKey, getAccessToken } from "./google-auth.ts";
 import { pushTrackedJobsToSheet, pullTrackedJobsFromSheet, SPREADSHEETS_SCOPE } from "./sheets.ts";
 import { App } from "./app.tsx";
 
+import { runAutoApplyBatch } from "./applier/engine.ts";
+import { sendEndOfDayReport } from "./discord.ts";
+import { detectPlatform } from "./classifier.ts";
+import { listApplicationsForDay } from "./db/repo.ts";
+
 interface Args {
   sync: boolean;
+  autoApply: boolean;
+  dryRun: boolean;
+  days?: number;
+  limit?: number;
+  eodReport: boolean;
+  scheduler: boolean;
   db?: string;
+  config?: string;
   export?: string;
   sheetsSync: boolean;
   sheetsPull: boolean;
+  help: boolean;
 }
 
 function parseArgs(argv: string[]): Args {
-  const args: Args = { sync: false, sheetsSync: false, sheetsPull: false };
+  const args: Args = {
+    sync: false,
+    autoApply: false,
+    dryRun: false,
+    eodReport: false,
+    scheduler: false,
+    sheetsSync: false,
+    sheetsPull: false,
+    help: false,
+  };
   for (let i = 0; i < argv.length; i++) {
     const arg = argv[i];
     if (arg === "--sync") {
       args.sync = true;
+    } else if (arg === "--auto-apply") {
+      args.autoApply = true;
+    } else if (arg === "--dry-run") {
+      args.dryRun = true;
+    } else if (arg === "--days") {
+      args.days = Number(argv[++i]);
+    } else if (arg === "--limit") {
+      args.limit = Number(argv[++i]);
+    } else if (arg === "--eod-report") {
+      args.eodReport = true;
+    } else if (arg === "--scheduler") {
+      args.scheduler = true;
     } else if (arg === "--db") {
       args.db = argv[++i];
+    } else if (arg === "--config") {
+      args.config = argv[++i];
     } else if (arg === "--export") {
       args.export = argv[++i];
     } else if (arg === "--sheets-sync") {
       args.sheetsSync = true;
     } else if (arg === "--sheets-pull") {
       args.sheetsPull = true;
+    } else if (arg === "--help" || arg === "-h") {
+      args.help = true;
     }
   }
   return args;
@@ -41,7 +79,7 @@ async function runSheetsSync(db: ReturnType<typeof openDb>): Promise<boolean> {
   const config = loadConfig().sheets;
   if (!config) {
     console.error(
-      "safar: --sheets-sync requires a \"sheets\" section in ~/.config/safar/config.json (see config.example.json)",
+      `safar: --sheets-sync requires a "sheets" section in ${resolveConfigPath()} (see config.example.json)`,
     );
     return true; // hadError
   }
@@ -71,7 +109,7 @@ async function runSheetsPull(db: ReturnType<typeof openDb>): Promise<boolean> {
   const config = loadConfig().sheets;
   if (!config) {
     console.error(
-      "safar: --sheets-pull requires a \"sheets\" section in ~/.config/safar/config.json (see config.example.json)",
+      `safar: --sheets-pull requires a "sheets" section in ${resolveConfigPath()} (see config.example.json)`,
     );
     return true; // hadError
   }
@@ -99,21 +137,204 @@ async function runSheetsPull(db: ReturnType<typeof openDb>): Promise<boolean> {
   }
 }
 
+async function runAutoApplyCli(
+  db: ReturnType<typeof openDb>,
+  options: { lookbackDays: number; dryRun: boolean; limit?: number },
+): Promise<boolean> {
+  const config = loadConfig();
+  if (!config.profile) {
+    console.warn(
+      `safar: warning — "profile" is not configured in ${resolveConfigPath()}. Auto-applier will identify and classify default jobs, but cannot submit without applicant details (see config.example.json).`,
+    );
+  }
+
+  console.log(
+    `safar: starting headless auto-applier (lookback: ${options.lookbackDays} days, dry-run: ${options.dryRun})`,
+  );
+  const result = await runAutoApplyBatch(db, {
+    lookbackDays: options.lookbackDays,
+    dryRun: options.dryRun,
+    limit: options.limit,
+    onProgress: (msg) => console.log(`[auto-apply] ${msg}`),
+  });
+
+  console.log("\n--- Auto-Apply Summary ---");
+  console.log(`Total scanned (past ${options.lookbackDays} days): ${result.totalScanned}`);
+  console.log(`Successfully applied: ${result.appliedCount}`);
+  console.log(`Already applied / Reposts: ${result.alreadyAppliedCount}`);
+  console.log(`Skipped (not eligible / custom questions): ${result.skippedCount}`);
+
+  if (result.appliedCount > 0) {
+    console.log("\nApplied Jobs:");
+    for (const r of result.results.filter((r) => r.status === "applied")) {
+      console.log(`  ✓ ${r.company} — ${r.title} (${r.url})`);
+    }
+  }
+
+  return false;
+}
+
+async function runEodReportCli(db: ReturnType<typeof openDb>): Promise<boolean> {
+  const config = loadConfig();
+  const webhookUrl = config.discord?.webhookUrl;
+  if (!webhookUrl) {
+    console.error(
+      `safar: --eod-report requires a "discord.webhookUrl" in ${resolveConfigPath()} (see config.example.json)`,
+    );
+    return true;
+  }
+
+  const now = new Date();
+  const startOfDay = new Date(now.getFullYear(), now.getMonth(), now.getDate(), 0, 0, 0);
+  const dayStartSec = Math.floor(startOfDay.getTime() / 1000);
+  const nowSec = Math.floor(Date.now() / 1000);
+  const dateStr = now.toISOString().slice(0, 10);
+
+  const apps = listApplicationsForDay(db, dayStartSec, nowSec);
+  const appsWithPlatform = apps.map((app) => ({
+    company: app.company,
+    title: app.title,
+    url: app.url,
+    platform: detectPlatform(app.url),
+    appliedAt: app.updatedAt || nowSec,
+  }));
+
+  console.log(
+    `safar: sending end-of-day summary to Discord for ${dateStr} (${apps.length} applications)...`,
+  );
+  const res = await sendEndOfDayReport(webhookUrl, {
+    date: dateStr,
+    applications: appsWithPlatform,
+  });
+
+  if (!res.success) {
+    console.error(`safar: Discord webhook failed — ${res.error}`);
+    return true;
+  }
+
+  console.log(
+    `safar: successfully sent EOD report to Discord webhook! (${apps.length} applications reported)`,
+  );
+  return false;
+}
+
+async function runSchedulerCli(db: ReturnType<typeof openDb>): Promise<boolean> {
+  console.log("safar: background scheduler started. Monitoring applications and daily Discord reports...");
+  const config = loadConfig();
+  const summaryTime = config.discord?.eodSummaryTime || "18:00";
+  const [targetHour, targetMinute] = summaryTime.split(":").map(Number);
+
+  let lastReportedDay = "";
+
+  // Run initial auto-apply
+  await runAutoApplyCli(db, { lookbackDays: 3, dryRun: false });
+
+  // Hourly check loop
+  const interval = setInterval(async () => {
+    const now = new Date();
+    const currentDay = now.toISOString().slice(0, 10);
+    const currentHour = now.getHours();
+    const currentMinute = now.getMinutes();
+
+    if (
+      currentHour === targetHour &&
+      Math.abs(currentMinute - (targetMinute || 0)) < 15 &&
+      lastReportedDay !== currentDay
+    ) {
+      console.log(`safar: trigger time reached (${summaryTime}). Sending end-of-day report to Discord...`);
+      await runEodReportCli(db);
+      lastReportedDay = currentDay;
+    }
+
+    try {
+      console.log("safar [scheduler]: syncing sources...");
+      await syncAll(db, defaultSources());
+      await runAutoApplyCli(db, { lookbackDays: 3, dryRun: false });
+    } catch (err) {
+      console.error("safar [scheduler] error:", err);
+    }
+  }, 60 * 60 * 1000);
+
+  await new Promise<void>((resolve) => {
+    process.on("SIGINT", () => {
+      clearInterval(interval);
+      resolve();
+    });
+    process.on("SIGTERM", () => {
+      clearInterval(interval);
+      resolve();
+    });
+  });
+
+  return false;
+}
+
 async function main() {
   const args = parseArgs(process.argv.slice(2));
+
+  if (args.config) {
+    process.env.SAFAR_CONFIG = args.config;
+  }
+
+  if (args.help) {
+    console.log(`safar — terminal job aggregator & application tracker
+
+Usage:
+  safar [options]
+
+Options:
+  --sync           Fetch latest jobs from all configured sources
+  --auto-apply     Auto-apply to default Greenhouse & Ashby jobs (past 3 days)
+  --dry-run        Test form filling headlessly without submitting
+  --days <N>       Lookback days for auto-apply (default: 3)
+  --limit <N>      Maximum jobs to auto-apply to
+  --eod-report     Send end-of-day summary report to Discord webhook
+  --scheduler      Run automated background scheduler for auto-apply & daily check
+  --export <path>  Export all jobs to .csv or .json
+  --sheets-sync    Push tracked jobs to Google Sheets
+  --sheets-pull    Pull tracked jobs from Google Sheets
+  --db <path>      Custom SQLite database path (default: ${resolveDbPath()})
+  --config <path>  Custom config path (default: ${resolveConfigPath()})
+  --help, -h       Show this help message`);
+    process.exit(0);
+  }
+
   const dbPath = args.db ?? resolveDbPath();
   const db = openDb(dbPath);
 
-  // Headless mode: --sync, --sheets-pull, --export, --sheets-sync — any combination, run
-  // in that order, then exit, no TUI. (§5 M1 CLI smoke test pattern,
-  // extended for export/sheets as later additions.)
-  if (args.sync || args.export || args.sheetsSync || args.sheetsPull) {
+  // Headless mode
+  if (
+    args.sync ||
+    args.export ||
+    args.sheetsSync ||
+    args.sheetsPull ||
+    args.autoApply ||
+    args.eodReport ||
+    args.scheduler
+  ) {
     let hadError = false;
 
     if (args.sync) {
       const results = await syncAll(db, defaultSources());
       console.log(formatSyncSummary(results));
       hadError = results.some((r) => r.error) || hadError;
+    }
+
+    if (args.autoApply) {
+      hadError =
+        (await runAutoApplyCli(db, {
+          lookbackDays: args.days ?? 3,
+          dryRun: args.dryRun,
+          limit: args.limit,
+        })) || hadError;
+    }
+
+    if (args.eodReport) {
+      hadError = (await runEodReportCli(db)) || hadError;
+    }
+
+    if (args.scheduler) {
+      hadError = (await runSchedulerCli(db)) || hadError;
     }
 
     if (args.sheetsPull) {
@@ -126,8 +347,6 @@ async function main() {
         console.error(`safar: --export path must end in .csv or .json (got "${args.export}")`);
         process.exit(1);
       }
-      // Every job, not just tracked ones — the DB is the system of record
-      // (§0), so this is a full backup/portability export, not just a CRM report.
       const jobs = listJobs(db, { active: "any" });
       const contents = format === "csv" ? exportJobsToCsv(jobs) : exportJobsToJson(jobs);
       writeFileSync(args.export, contents);
@@ -139,6 +358,12 @@ async function main() {
     }
 
     process.exit(hadError ? 1 : 0);
+  }
+
+  if (!process.stdin.isTTY) {
+    console.error("safar: interactive TUI requires a TTY terminal. Use --help for headless options.");
+    db.close();
+    process.exit(1);
   }
 
   const { waitUntilExit } = render(<App db={db} />);

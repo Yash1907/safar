@@ -32,3 +32,13 @@ Thumbs.db
 *.swp
 *.swo
 *~
+
+# Test & Playwright artifacts
+test-results/
+playwright-report/
+.playwright/
+
+# Resumes and credential keys
+*.pdf
+*-service-account*.json
+gcp-*.json

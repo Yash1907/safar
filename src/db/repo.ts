@@ -1,7 +1,7 @@
 import { Database } from "bun:sqlite";
 import { homedir } from "node:os";
 import { join } from "node:path";
-import { mkdirSync } from "node:fs";
+import { existsSync, mkdirSync } from "node:fs";
 import { migrate } from "./schema.ts";
 import type { RawJob } from "../sources/types.ts";
 
@@ -44,10 +44,16 @@ export interface JobRecord {
   updatedAt: number | null; // applications.updated_at — drives Tracker's "days since last update"
 }
 
+export interface SkippedJobRecord extends JobRecord {
+  skipReason: string;
+  skippedAt: number;
+}
+
 /** active:false → inactive only, active:any → both, default (undefined) → active only. */
 export interface JobFilter {
   active?: "any" | "false";
   sourceId?: string;
+  sourceIds?: string[];
   category?: string;
   workModel?: "remote" | "hybrid" | "onsite";
   status?: ApplicationStatus;
@@ -58,6 +64,15 @@ export interface JobFilter {
 /** Resolves the DB path per §2: ~/.local/share/safar/safar.db, overridable via SAFAR_DB. */
 export function resolveDbPath(): string {
   if (process.env.SAFAR_DB) return process.env.SAFAR_DB;
+  if (process.platform === "win32" && process.env.LOCALAPPDATA) {
+    const winDir = join(process.env.LOCALAPPDATA, "safar");
+    const xdgDir = join(homedir(), ".local", "share", "safar");
+    if (!existsSync(join(winDir, "safar.db")) && existsSync(join(xdgDir, "safar.db"))) {
+      return join(xdgDir, "safar.db");
+    }
+    mkdirSync(winDir, { recursive: true });
+    return join(winDir, "safar.db");
+  }
   const dir = join(homedir(), ".local", "share", "safar");
   mkdirSync(dir, { recursive: true });
   return join(dir, "safar.db");
@@ -171,6 +186,9 @@ export function setStatus(
     db.query(
       "INSERT INTO status_history (job_id, status, at) VALUES (?, ?, ?)",
     ).run(jobId, status, now);
+    if (status === "applied") {
+      db.query("DELETE FROM skipped_jobs WHERE job_id = ?").run(jobId);
+    }
   })();
 }
 
@@ -266,6 +284,16 @@ export function listJobs(db: Database, filter: JobFilter = {}): JobRecord[] {
     params.push(filter.sourceId);
   }
 
+  if (filter.sourceIds !== undefined) {
+    if (filter.sourceIds.length === 0) {
+      clauses.push("0 = 1");
+    } else {
+      const placeholders = filter.sourceIds.map(() => "?").join(", ");
+      clauses.push(`j.source_id IN (${placeholders})`);
+      params.push(...filter.sourceIds);
+    }
+  }
+
   if (filter.category) {
     clauses.push("LOWER(json_extract(j.extra, '$.category')) = LOWER(?)");
     params.push(filter.category);
@@ -357,4 +385,90 @@ export function getStatusHistory(
 export function clearStatusHistory(db: Database, jobId: number): number {
   const result = db.query("DELETE FROM status_history WHERE job_id = ?").run(jobId);
   return result.changes;
+}
+
+export function recordSkippedJob(
+  db: Database,
+  jobId: number,
+  reason: string,
+  skippedAt: number = Math.floor(Date.now() / 1000),
+): void {
+  db.query(
+    `INSERT INTO skipped_jobs (job_id, reason, skipped_at)
+     VALUES (?, ?, ?)
+     ON CONFLICT(job_id) DO UPDATE SET reason = excluded.reason, skipped_at = excluded.skipped_at`,
+  ).run(jobId, reason, skippedAt);
+}
+
+export function deleteSkippedJob(db: Database, jobId: number): boolean {
+  const res = db.query("DELETE FROM skipped_jobs WHERE job_id = ?").run(jobId);
+  return res.changes > 0;
+}
+
+export function isJobSkipped(db: Database, jobId: number): boolean {
+  const row = db.query<{ job_id: number }, [number]>(
+    "SELECT job_id FROM skipped_jobs WHERE job_id = ?",
+  ).get(jobId);
+  return !!row;
+}
+
+export function listSkippedJobs(
+  db: Database,
+  options?: { lookbackDays?: number; text?: string },
+): SkippedJobRecord[] {
+  const clauses: string[] = [];
+  const params: unknown[] = [];
+
+  if (options?.lookbackDays) {
+    const cutoff = Math.floor(Date.now() / 1000) - options.lookbackDays * 86400;
+    clauses.push("(j.date_posted >= ? OR (j.date_posted IS NULL AND j.first_seen_at >= ?))");
+    params.push(cutoff, cutoff);
+  }
+
+  if (options?.text) {
+    clauses.push(
+      "(LOWER(j.company) LIKE ? OR LOWER(j.title) LIKE ? OR LOWER(s.reason) LIKE ?)",
+    );
+    const like = `%${options.text.toLowerCase()}%`;
+    params.push(like, like, like);
+  }
+
+  // Never show jobs that are already tracked with applied/saved/etc.
+  clauses.push("(a.status IS NULL OR a.status = 'saved')");
+
+  const where = clauses.length ? `WHERE ${clauses.join(" AND ")}` : "";
+  const rows = db
+    .query(
+      `SELECT j.*, a.status as status, a.notes as notes, a.updated_at as updated_at,
+              s.reason as skip_reason, s.skipped_at as skipped_at
+       FROM skipped_jobs s
+       JOIN jobs j ON s.job_id = j.id
+       LEFT JOIN applications a ON a.job_id = j.id
+       ${where}
+       ORDER BY s.skipped_at DESC`,
+    )
+    .all(...(params as any[]));
+
+  return (rows as any[]).map((row) => ({
+    ...rowToJob(row),
+    skipReason: row.skip_reason,
+    skippedAt: row.skipped_at,
+  }));
+}
+
+export function listApplicationsForDay(
+  db: Database,
+  dayStartSec: number,
+  dayEndSec: number,
+): JobRecord[] {
+  const rows = db
+    .query(
+      `SELECT j.*, a.status as status, a.notes as notes, a.updated_at as updated_at
+       FROM applications a
+       JOIN jobs j ON a.job_id = j.id
+       WHERE a.status = 'applied' AND a.updated_at >= ? AND a.updated_at <= ?
+       ORDER BY a.updated_at ASC`,
+    )
+    .all(dayStartSec, dayEndSec);
+  return rows.map(rowToJob);
 }

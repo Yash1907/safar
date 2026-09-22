@@ -1,8 +1,8 @@
-import type { JobRecord, ApplicationStatus } from "./db/repo.ts";
+import type { JobRecord, ApplicationStatus, SkippedJobRecord } from "./db/repo.ts";
 import type { ActiveMode } from "./filter.ts";
 import type { SyncResult } from "./sources/types.ts";
 
-export type Tab = "browse" | "tracker";
+export type Tab = "browse" | "skipped" | "tracker";
 
 export interface StatusHistoryEntry {
   status: string;
@@ -13,6 +13,7 @@ export interface AppState {
   tab: Tab;
   detailJobId: number | null;
   jobs: JobRecord[]; // Browse's currently loaded list, respecting activeMode
+  skippedJobs: SkippedJobRecord[]; // Skipped jobs list for manual applications
   trackedJobs: JobRecord[]; // Tracker's list — ignores activeMode, requires a status (§3 View 3)
   activeMode: ActiveMode;
   filterText: string;
@@ -67,6 +68,7 @@ export type Action =
   | { type: "CANCEL_EDIT_NOTES" }
   | { type: "COMMIT_EDIT_NOTES" }
   | { type: "DELETE_APPLICATION"; jobId: number }
+  | { type: "SET_SKIPPED_JOBS"; jobs: SkippedJobRecord[] }
   | { type: "SHEETS_SYNC_START" }
   | { type: "SHEETS_PULL_START" }
   | { type: "SHEETS_SYNC_DONE"; message: string };
@@ -76,6 +78,7 @@ export function initialState(): AppState {
     tab: "browse",
     detailJobId: null,
     jobs: [],
+    skippedJobs: [],
     trackedJobs: [],
     activeMode: "active",
     filterText: "",
@@ -191,6 +194,8 @@ export function reducer(state: AppState, action: Action): AppState {
         ),
         trackedJobs: state.trackedJobs.filter((j) => j.id !== action.jobId),
       };
+    case "SET_SKIPPED_JOBS":
+      return { ...state, skippedJobs: action.jobs };
     case "SHEETS_SYNC_START":
       return { ...state, sheetsSyncStatus: "syncing", statusMessage: "pushing to Google Sheets…" };
     case "SHEETS_PULL_START":

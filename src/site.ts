@@ -25,6 +25,7 @@ const KNOWN_SITES: [pattern: string, label: string, color: string][] = [
   ["recruitee.com", "recruitee", "cyan"],
   ["personio.com", "personio", "blue"],
   ["jobright.ai", "jobright", "gray"],
+  ["zapply.jobs", "zapply", "cyanBright"],
   ["linkedin.com", "linkedin", "blueBright"],
   ["indeed.com", "indeed", "blueBright"],
 ];

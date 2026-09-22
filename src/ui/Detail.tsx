@@ -38,6 +38,12 @@ export function Detail({
       <Text>{job.company}</Text>
       <Text dimColor>{job.locations.join(", ") || "location unknown"}</Text>
       {job.workModel && <Text dimColor>work model: {job.workModel}</Text>}
+      {Boolean((job.extra as Record<string, unknown>)?.category) && (
+        <Text dimColor>category: {String((job.extra as Record<string, unknown>).category)}</Text>
+      )}
+      {Boolean((job.extra as Record<string, unknown>)?.sponsorship) && (
+        <Text dimColor>sponsorship: {String((job.extra as Record<string, unknown>).sponsorship)}</Text>
+      )}
       <Text dimColor>source: {job.sourceId}</Text>
       <Text dimColor>{job.active ? "active" : "inactive upstream"}</Text>
       <Text underline>{job.url}</Text>
@@ -62,7 +68,7 @@ export function Detail({
             active={notesEditing}
           />
         ) : job.notes ? (
-          job.notes.split("\n").map((line, i) => <Text key={i}>{line}</Text>)
+          job.notes.split(/\r?\n/).map((line, i) => <Text key={i}>{line}</Text>)
         ) : (
           <Text dimColor>(none — press n to add)</Text>
         )}

@@ -46,7 +46,7 @@ export function NotesEditor({
     { isActive: active },
   );
 
-  const lines = value.length > 0 ? value.split("\n") : [""];
+  const lines = value.length > 0 ? value.split(/\r?\n/) : [""];
 
   return (
     <Box flexDirection="column" borderStyle="round" paddingX={1}>

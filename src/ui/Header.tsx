@@ -84,11 +84,15 @@ export function Header({
           <Text bold>safar</Text>
           <Text>  </Text>
           <Text bold={tab === "browse"} color={tab === "browse" ? "cyan" : undefined}>
-            ▸ Browse
+            {tab === "browse" ? "▸ Browse" : "  Browse"}
+          </Text>
+          <Text>   </Text>
+          <Text bold={tab === "skipped"} color={tab === "skipped" ? "cyan" : undefined}>
+            {tab === "skipped" ? "▸ Skipped" : "  Skipped"}
           </Text>
           <Text>   </Text>
           <Text bold={tab === "tracker"} color={tab === "tracker" ? "cyan" : undefined}>
-            Tracker
+            {tab === "tracker" ? "▸ Tracker" : "  Tracker"}
           </Text>
         </Box>
         <Text dimColor>{syncLabel}</Text>

@@ -5,6 +5,7 @@ import { getMeta } from "./db/schema.ts";
 import {
   listJobs,
   listTrackedJobs,
+  listSkippedJobs,
   setStatus,
   setNotes,
   undoLastStatus,
@@ -17,7 +18,7 @@ import {
 } from "./db/repo.ts";
 import { defaultSources } from "./sources/registry.ts";
 import { syncAll } from "./sync.ts";
-import { reducer, initialState } from "./store.ts";
+import { reducer, initialState, type Tab } from "./store.ts";
 import type { ActiveMode } from "./filter.ts";
 import { parseFilterQuery, applyFilter } from "./filter.ts";
 import { groupTrackedJobs, flattenGroups } from "./tracker.ts";
@@ -27,6 +28,7 @@ import { loadServiceAccountKey, getAccessToken } from "./google-auth.ts";
 import { pushTrackedJobsToSheet, pullTrackedJobsFromSheet, SPREADSHEETS_SCOPE } from "./sheets.ts";
 import { Header } from "./ui/Header.tsx";
 import { Browse } from "./ui/Browse.tsx";
+import { Skipped } from "./ui/Skipped.tsx";
 import { Detail } from "./ui/Detail.tsx";
 import { Tracker } from "./ui/Tracker.tsx";
 
@@ -78,11 +80,15 @@ export function App({ db }: { db: Database }) {
     dispatch({ type: "SET_TRACKED_JOBS", jobs: listTrackedJobs(db) });
   }, [db]);
 
+  const refreshSkippedJobs = useCallback(() => {
+    dispatch({ type: "SET_SKIPPED_JOBS", jobs: listSkippedJobs(db) });
+  }, [db]);
+
   const runSync = useCallback(async () => {
     const cutoffsBefore = readCutoffs(db, sourceIds);
     dispatch({ type: "SYNC_START" });
     const results = await syncAll(db, adapters, new Date());
-    const jobs = listJobs(db, { active: toDbActiveFilter(activeModeRef.current) });
+    const jobs = listJobs(db, { active: toDbActiveFilter(activeModeRef.current), sourceIds });
     // Read fresh — a source that errored won't have bumped its last_sync_at,
     // so this is exactly where per-source sync freshness diverges (§ header).
     // 0 means "never synced" (readCutoffs' default), not the unix epoch — drop it.
@@ -100,7 +106,8 @@ export function App({ db }: { db: Database }) {
       perSourceSyncedAtMs,
     });
     refreshTrackedJobs();
-  }, [db, adapters, sourceIds, refreshTrackedJobs]);
+    refreshSkippedJobs();
+  }, [db, adapters, sourceIds, refreshTrackedJobs, refreshSkippedJobs]);
 
   // Initial hydrate + auto-sync-if-stale (§3 Sync).
   useEffect(() => {
@@ -108,7 +115,7 @@ export function App({ db }: { db: Database }) {
     hydrated.current = true;
 
     const cutoffs = readCutoffs(db, sourceIds);
-    const jobs = listJobs(db, { active: toDbActiveFilter(state.activeMode) });
+    const jobs = listJobs(db, { active: toDbActiveFilter(state.activeMode), sourceIds });
     const lastSyncValues = Object.values(cutoffs).filter((v) => v > 0);
     const lastSyncedAtMs = lastSyncValues.length
       ? Math.max(...lastSyncValues) * 1000
@@ -120,6 +127,7 @@ export function App({ db }: { db: Database }) {
     );
     dispatch({ type: "HYDRATE", jobs, cutoffs, lastSyncedAtMs, perSourceSyncedAtMs });
     refreshTrackedJobs();
+    refreshSkippedJobs();
 
     const nowSec = Math.floor(Date.now() / 1000);
     const stale = sourceIds.some((id) => {
@@ -136,7 +144,7 @@ export function App({ db }: { db: Database }) {
   // kept in memory by default — §3 "Default filter: active jobs only").
   useEffect(() => {
     if (!hydrated.current) return;
-    const jobs = listJobs(db, { active: toDbActiveFilter(state.activeMode) });
+    const jobs = listJobs(db, { active: toDbActiveFilter(state.activeMode), sourceIds });
     dispatch({ type: "SET_JOBS", jobs });
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [state.activeMode]);
@@ -179,12 +187,29 @@ export function App({ db }: { db: Database }) {
     return counts;
   }, [state.trackedJobs]);
 
+  const filteredSkipped = useMemo(() => {
+    if (!state.filterText) return state.skippedJobs;
+    const lower = state.filterText.toLowerCase();
+    return state.skippedJobs.filter(
+      (j) =>
+        j.company.toLowerCase().includes(lower) ||
+        j.title.toLowerCase().includes(lower) ||
+        j.skipReason.toLowerCase().includes(lower),
+    );
+  }, [state.skippedJobs, state.filterText]);
+
   // The list the current tab's j/k/enter/o/s/a operate on.
-  const currentList = state.tab === "browse" ? filteredJobs : trackedFlat;
+  const currentList =
+    state.tab === "browse"
+      ? filteredJobs
+      : state.tab === "skipped"
+      ? filteredSkipped
+      : trackedFlat;
   const selected = currentList[state.selectedIndex];
 
   const detailJob = state.detailJobId
     ? (state.jobs.find((j) => j.id === state.detailJobId) ??
+        state.skippedJobs.find((j) => j.id === state.detailJobId) ??
         state.trackedJobs.find((j) => j.id === state.detailJobId) ??
         null)
     : null;
@@ -203,12 +228,13 @@ export function App({ db }: { db: Database }) {
       setStatus(db, jobId, status, Math.floor(Date.now() / 1000));
       dispatch({ type: "UPDATE_JOB_STATUS", jobId, status });
       refreshTrackedJobs();
+      refreshSkippedJobs();
       // Status history changed for this job — refresh it if Detail is open on it.
       if (jobId === state.detailJobId) {
         dispatch({ type: "SET_STATUS_HISTORY", entries: getStatusHistory(db, jobId) });
       }
     },
-    [db, refreshTrackedJobs, state.detailJobId],
+    [db, refreshTrackedJobs, refreshSkippedJobs, state.detailJobId],
   );
 
   const undoStatus = useCallback(
@@ -319,7 +345,7 @@ export function App({ db }: { db: Database }) {
       );
       refreshTrackedJobs();
       const activeFilter = toDbActiveFilter(activeModeRef.current);
-      dispatch({ type: "SET_JOBS", jobs: listJobs(db, { active: activeFilter }) });
+      dispatch({ type: "SET_JOBS", jobs: listJobs(db, { active: activeFilter, sourceIds }) });
       if (state.detailJobId !== null) {
         dispatch({ type: "SET_STATUS_HISTORY", entries: getStatusHistory(db, state.detailJobId) });
       }
@@ -357,7 +383,9 @@ export function App({ db }: { db: Database }) {
         return;
       }
       if (key.tab) {
-        dispatch({ type: "SET_TAB", tab: state.tab === "browse" ? "tracker" : "browse" });
+        const nextTab: Tab =
+          state.tab === "browse" ? "skipped" : state.tab === "skipped" ? "tracker" : "browse";
+        dispatch({ type: "SET_TAB", tab: nextTab });
         return;
       }
       if (input === "r") {
@@ -393,7 +421,7 @@ export function App({ db }: { db: Database }) {
         return;
       }
 
-      if (input === "/" && state.tab === "browse") {
+      if (input === "/" && (state.tab === "browse" || state.tab === "skipped")) {
         dispatch({ type: "SET_FILTER_EDITING", editing: true });
         return;
       }
@@ -497,6 +525,18 @@ export function App({ db }: { db: Database }) {
           newCount={newCount}
           selectedIndex={state.selectedIndex}
           isNew={isNew}
+          nowMs={Date.now()}
+          visibleRows={visibleRows}
+        />
+      ) : state.tab === "skipped" ? (
+        <Skipped
+          filterText={state.filterText}
+          editing={state.filterEditing}
+          onFilterChange={(text) => dispatch({ type: "SET_FILTER_TEXT", text })}
+          onFilterSubmit={() => dispatch({ type: "SET_FILTER_EDITING", editing: false })}
+          filteredJobs={filteredSkipped}
+          totalCount={state.skippedJobs.length}
+          selectedIndex={state.selectedIndex}
           nowMs={Date.now()}
           visibleRows={visibleRows}
         />

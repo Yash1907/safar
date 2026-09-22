@@ -141,4 +141,24 @@ describe("syncAll", () => {
     expect(summary).toContain("+1 new");
     expect(summary).toContain("Bad Source: error — boom");
   });
+
+  test("listJobs filters by sourceIds array", async () => {
+    const db = freshDb();
+    const s1 = fakeAdapter("src-1", [job({ sourceId: "src-1", sourceJobId: "1" })]);
+    const s2 = fakeAdapter("src-2", [job({ sourceId: "src-2", sourceJobId: "2" })]);
+    const s3 = fakeAdapter("src-3", [job({ sourceId: "src-3", sourceJobId: "3" })]);
+    await syncAll(db, [s1, s2, s3], new Date());
+
+    // Filter to only src-1 and src-3
+    const subset = listJobs(db, { active: "any", sourceIds: ["src-1", "src-3"] });
+    expect(subset.map((j) => j.sourceId).sort()).toEqual(["src-1", "src-3"]);
+
+    // Empty sourceIds array returns no jobs
+    const empty = listJobs(db, { active: "any", sourceIds: [] });
+    expect(empty).toHaveLength(0);
+
+    // Undefined sourceIds returns all
+    const all = listJobs(db, { active: "any" });
+    expect(all).toHaveLength(3);
+  });
 });

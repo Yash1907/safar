@@ -1,6 +1,6 @@
 import type { Database } from "bun:sqlite";
 
-export const SCHEMA_VERSION = 1;
+export const SCHEMA_VERSION = 2;
 
 const MIGRATIONS: string[] = [
   // v1 — initial schema (IMPLEMENTATION.md §2)
@@ -40,6 +40,15 @@ const MIGRATIONS: string[] = [
     key   TEXT PRIMARY KEY,
     value TEXT NOT NULL
   );
+  `,
+  // v2 — skipped_jobs tracking for auto-applier
+  `
+  CREATE TABLE IF NOT EXISTS skipped_jobs (
+    job_id     INTEGER PRIMARY KEY REFERENCES jobs(id),
+    reason     TEXT NOT NULL,
+    skipped_at INTEGER NOT NULL
+  );
+  CREATE INDEX IF NOT EXISTS idx_skipped_jobs_skipped_at ON skipped_jobs(skipped_at);
   `,
 ];
 
