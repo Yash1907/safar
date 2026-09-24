@@ -227,7 +227,8 @@ Options:
 | `/` | Filter search (fuzzy match or tokens like `loc:`, `cat:`, `wm:`) |
 | `Enter` | Open detailed job sub-view (notes, status history timeline) |
 | `o` | Open job application link in default web browser |
-| `a` | Mark selected job as **applied** (removes from Skipped, adds to Tracker) |
+| `A` | **Auto-apply** headlessly to selected job (Greenhouse & Ashby default jobs) |
+| `a` | Mark selected job as **applied** manually (removes from Skipped, adds to Tracker) |
 | `s` | Mark selected job as **saved** |
 | `u` | Undo last status change |
 | `d` | Delete application tracking |

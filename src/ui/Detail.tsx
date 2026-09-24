@@ -87,7 +87,7 @@ export function Detail({
 
       <Box marginTop={1}>
         <Text dimColor>
-          1-7 set status · d delete · u undo · C clear history · o open · n edit notes · esc back
+          1-7 set status · A auto-apply · d delete · u undo · C clear history · o open · n edit notes · esc back
         </Text>
       </Box>
     </Box>

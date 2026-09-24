@@ -43,7 +43,7 @@ export function Skipped({
         visibleRows={visibleRows}
       />
       <Text dimColor>
-        j/k move · o open to apply manually · a mark applied · enter detail · / filter · Tab switch tabs · q quit
+        j/k move · A auto-apply · o open to apply manually · a mark applied · enter detail · / filter · Tab switch tabs · q quit
       </Text>
     </Box>
   );

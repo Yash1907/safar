@@ -31,6 +31,8 @@ import { Browse } from "./ui/Browse.tsx";
 import { Skipped } from "./ui/Skipped.tsx";
 import { Detail } from "./ui/Detail.tsx";
 import { Tracker } from "./ui/Tracker.tsx";
+import { autoApplySingleJob } from "./applier/engine.ts";
+import { detectRoleType, roleBadge } from "./role.ts";
 
 const AUTO_SYNC_STALE_SEC = 6 * 60 * 60; // §3: auto-sync on launch if last_sync_at older than 6h
 const HEADER_ROWS = 2; // tab row + optional stats-by-status row (§5 M4)
@@ -292,6 +294,49 @@ export function App({ db }: { db: Database }) {
     [db, state.jobs, state.trackedJobs, state.detailJobId, refreshTrackedJobs],
   );
 
+  const runAutoApply = useCallback(
+    async (job: JobRecord) => {
+      const role = detectRoleType(job);
+      const roleStr = roleBadge(role).toUpperCase();
+      dispatch({
+        type: "SET_STATUS_MESSAGE",
+        message: `🤖 Auto-applying to ${job.company} — "${job.title}" [${roleStr}]...`,
+      });
+
+      try {
+        const res = await autoApplySingleJob(db, job);
+        if (res.success) {
+          dispatch({
+            type: "UPDATE_JOB_STATUS",
+            jobId: job.id,
+            status: "applied",
+          });
+          refreshTrackedJobs();
+          refreshSkippedJobs();
+          if (job.id === state.detailJobId) {
+            dispatch({ type: "SET_STATUS_HISTORY", entries: getStatusHistory(db, job.id) });
+          }
+          dispatch({
+            type: "SET_STATUS_MESSAGE",
+            message: `✅ Auto-applied to ${job.company} [${roleStr}]${res.dryRun ? " (dry-run)" : ""}`,
+          });
+        } else {
+          refreshSkippedJobs();
+          dispatch({
+            type: "SET_STATUS_MESSAGE",
+            message: `❌ Cannot auto-apply to ${job.company}: ${res.reason}`,
+          });
+        }
+      } catch (err) {
+        dispatch({
+          type: "SET_STATUS_MESSAGE",
+          message: `❌ Auto-apply error: ${err instanceof Error ? err.message : String(err)}`,
+        });
+      }
+    },
+    [db, refreshTrackedJobs, refreshSkippedJobs, state.detailJobId],
+  );
+
   const runSheetsSync = useCallback(async () => {
     dispatch({ type: "SHEETS_SYNC_START" });
     try {
@@ -406,6 +451,8 @@ export function App({ db }: { db: Database }) {
           dispatch({ type: "CLOSE_DETAIL" });
         } else if (input === "o" && detailJob) {
           openUrl(detailJob.url);
+        } else if (input === "A" && detailJob) {
+          void runAutoApply(detailJob);
         } else if (input === "n" && detailJob) {
           dispatch({ type: "START_EDIT_NOTES", initial: detailJob.notes ?? "" });
         } else if (STATUS_KEY_RE.test(input) && detailJob) {
@@ -463,6 +510,10 @@ export function App({ db }: { db: Database }) {
       }
       if (input === "o" && selected) {
         openUrl(selected.url);
+        return;
+      }
+      if (input === "A" && selected) {
+        void runAutoApply(selected);
         return;
       }
       if (input === "s" && selected) {
