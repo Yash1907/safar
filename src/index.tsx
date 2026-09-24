@@ -20,6 +20,7 @@ interface Args {
   sync: boolean;
   autoApply: boolean;
   dryRun: boolean;
+  headed?: boolean;
   days?: number;
   limit?: number;
   role?: RoleType | "all";
@@ -38,6 +39,7 @@ function parseArgs(argv: string[]): Args {
     sync: false,
     autoApply: false,
     dryRun: false,
+    headed: false,
     eodReport: false,
     scheduler: false,
     sheetsSync: false,
@@ -52,6 +54,8 @@ function parseArgs(argv: string[]): Args {
       args.autoApply = true;
     } else if (arg === "--dry-run") {
       args.dryRun = true;
+    } else if (arg === "--headed" || arg === "--no-headless") {
+      args.headed = true;
     } else if (arg === "--days") {
       args.days = Number(argv[++i]);
     } else if (arg === "--limit") {
@@ -146,7 +150,13 @@ async function runSheetsPull(db: ReturnType<typeof openDb>): Promise<boolean> {
 
 async function runAutoApplyCli(
   db: ReturnType<typeof openDb>,
-  options: { lookbackDays: number; dryRun: boolean; limit?: number; role?: RoleType | "all" },
+  options: {
+    lookbackDays: number;
+    dryRun: boolean;
+    headed?: boolean;
+    limit?: number;
+    role?: RoleType | "all";
+  },
 ): Promise<boolean> {
   const config = loadConfig();
   if (!config.profile) {
@@ -156,12 +166,14 @@ async function runAutoApplyCli(
   }
 
   const roleDesc = options.role && options.role !== "all" ? ` [${options.role.toUpperCase()}]` : "";
+  const modeDesc = options.headed ? "headed (visible browser)" : "headless";
   console.log(
-    `safar: starting headless auto-applier${roleDesc} (lookback: ${options.lookbackDays} days, dry-run: ${options.dryRun})`,
+    `safar: starting ${modeDesc} auto-applier${roleDesc} (lookback: ${options.lookbackDays} days, dry-run: ${options.dryRun})`,
   );
   const result = await runAutoApplyBatch(db, {
     lookbackDays: options.lookbackDays,
     dryRun: options.dryRun,
+    headless: options.headed ? false : undefined,
     limit: options.limit,
     role: options.role,
     onProgress: (msg) => console.log(`[auto-apply] ${msg}`),
@@ -296,7 +308,8 @@ Usage:
 Options:
   --sync           Fetch latest jobs from all configured sources
   --auto-apply     Auto-apply to default Greenhouse & Ashby jobs (past 3 days)
-  --dry-run        Test form filling headlessly without submitting
+  --dry-run        Test form filling without submitting
+  --headed         Run with visible browser window (watch form filling live)
   --days <N>       Lookback days for auto-apply (default: 3)
   --limit <N>      Maximum jobs to auto-apply to
   --role <type>    Filter auto-apply by role: intern, ft, or all (default: all)
@@ -337,6 +350,7 @@ Options:
         (await runAutoApplyCli(db, {
           lookbackDays: args.days ?? 3,
           dryRun: args.dryRun,
+          headed: args.headed,
           limit: args.limit,
           role: args.role,
         })) || hadError;

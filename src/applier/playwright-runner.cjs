@@ -346,15 +346,41 @@ function formatDateForPicker(val) {
   return new Date().toISOString().split("T")[0];
 }
 
-async function runAutoApply({ url, platform, profile, dryRun }) {
+async function runAutoApply({ url, platform, profile, dryRun, headless }) {
+  const isHeadless = headless !== false;
+  const launchArgs = isHeadless
+    ? ["--disable-blink-features=AutomationControlled", "--no-sandbox"]
+    : ["--disable-blink-features=AutomationControlled", "--no-sandbox"];
+
   const browser = await chromium.launch({
-    headless: true,
-    args: ["--no-startup-window", "--disable-gpu", "--no-sandbox"],
+    headless: isHeadless,
+    args: launchArgs,
+    slowMo: isHeadless ? undefined : 60,
   });
 
   const context = await browser.newContext({
     userAgent: "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
+    viewport: isHeadless ? undefined : { width: 1280, height: 900 },
   });
+
+  await context.addInitScript(() => {
+    Object.defineProperty(navigator, "webdriver", {
+      get: () => undefined,
+    });
+    Object.defineProperty(navigator, "plugins", {
+      get: () => [1, 2, 3, 4, 5],
+    });
+    Object.defineProperty(navigator, "languages", {
+      get: () => ["en-US", "en"],
+    });
+    window.chrome = {
+      runtime: {},
+      app: {},
+      loadTimes: () => {},
+      csi: () => {},
+    };
+  });
+
   const page = await context.newPage();
 
   try {
@@ -418,10 +444,11 @@ async function runAutoApply({ url, platform, profile, dryRun }) {
       if (resumeExists) {
         const fileInputs = await page.$$('input[type="file"]');
         for (const input of fileInputs) {
-          const name = (await input.getAttribute("name")) || "";
-          const id = (await input.getAttribute("id")) || "";
+          const name = ((await input.getAttribute("name")) || "").toLowerCase();
+          const id = ((await input.getAttribute("id")) || "").toLowerCase();
           if (name.includes("resume") || id.includes("resume") || fileInputs.length === 1) {
             await input.setInputFiles(profile.resumePath);
+            await page.waitForTimeout(2000);
             break;
           }
         }
@@ -522,6 +549,9 @@ async function runAutoApply({ url, platform, profile, dryRun }) {
 
       // 10. Submit or Dry-run
       if (dryRun) {
+        if (!isHeadless) {
+          await page.waitForTimeout(4000);
+        }
         await browser.close();
         return { success: true, dryRun: true, message: "Dry-run: Greenhouse form filled successfully" };
       }
@@ -535,17 +565,55 @@ async function runAutoApply({ url, platform, profile, dryRun }) {
       }
 
       await submitBtn.click();
-      await page.waitForTimeout(5000);
 
-      // Check success
-      const currentUrl = page.url();
-      const content = await page.content();
-      const success = currentUrl.includes("confirmation") ||
-                      content.toLowerCase().includes("thank you for applying") ||
-                      content.toLowerCase().includes("application submitted");
+      // Check success or errors
+      let success = false;
+      let confirmationUrl = page.url();
+      let errorReason = "";
 
+      for (let i = 0; i < 10; i++) {
+        await page.waitForTimeout(1000);
+        confirmationUrl = page.url();
+        const content = (await page.content()).toLowerCase();
+        if (
+          confirmationUrl.includes("confirmation") ||
+          confirmationUrl.includes("applied") ||
+          content.includes("thank you for applying") ||
+          content.includes("application submitted") ||
+          content.includes("we've received your application") ||
+          content.includes("application has been submitted")
+        ) {
+          success = true;
+          break;
+        }
+
+        const errorEl = await page.$('.error, .error-message, [class*="error" i], [aria-invalid="true"], #error_message, .alert-danger');
+        if (errorEl && (await errorEl.isVisible())) {
+          const text = (await errorEl.innerText()).trim();
+          if (text) {
+            errorReason = text;
+            break;
+          }
+        }
+      }
+
+      if (!success) {
+        if (!errorReason) {
+          const invalidInputs = await page.$$('[aria-invalid="true"], :invalid, input.error');
+          if (invalidInputs.length > 0) {
+            errorReason = "Form validation failed — required fields may be incomplete or invalid";
+          } else {
+            errorReason = "Application did not navigate to confirmation page after submission";
+          }
+        }
+        if (!isHeadless) await page.waitForTimeout(3000);
+        await browser.close();
+        return { success: false, error: errorReason };
+      }
+
+      if (!isHeadless) await page.waitForTimeout(2000);
       await browser.close();
-      return { success: true, confirmationUrl: currentUrl };
+      return { success: true, confirmationUrl };
 
     } else if (platform === "ashby") {
       // Ashby form fields
@@ -571,10 +639,24 @@ async function runAutoApply({ url, platform, profile, dryRun }) {
 
       // 3. Resume
       if (resumeExists) {
-        const fileInput = await page.$('input[type="file"]');
+        let fileInput = await page.$('#_systemfield_resume, input[id*="resume" i], input[name*="resume" i]');
+        if (!fileInput) {
+          const allFileInputs = await page.$$('input[type="file"]');
+          for (const fi of allFileInputs) {
+            const id = ((await fi.getAttribute("id")) || "").toLowerCase();
+            const name = ((await fi.getAttribute("name")) || "").toLowerCase();
+            if (id.includes("resume") || name.includes("resume")) {
+              fileInput = fi;
+              break;
+            }
+          }
+          if (!fileInput && allFileInputs.length > 0) {
+            fileInput = allFileInputs[allFileInputs.length - 1];
+          }
+        }
         if (fileInput) {
           await fileInput.setInputFiles(profile.resumePath);
-          await page.waitForTimeout(1000);
+          await page.waitForTimeout(3000);
         }
       }
 
@@ -632,29 +714,84 @@ async function runAutoApply({ url, platform, profile, dryRun }) {
       await answerGeneralQuestions(page, profile, "ashby");
 
       if (dryRun) {
+        if (!isHeadless) {
+          await page.waitForTimeout(4000);
+        }
         await browser.close();
         return { success: true, dryRun: true, message: "Dry-run: Ashby form filled successfully" };
       }
 
       const submitBtn = await page.$(
-        'button[type="submit"], button:has-text("Submit Application"), button:has-text("Apply")'
+        '.ashby-application-form-submit-button, button[type="submit"], button:has-text("Submit Application"), button:has-text("Apply")'
       );
       if (!submitBtn) {
         await browser.close();
         return { success: false, error: "Submit button not found on Ashby application form" };
       }
 
+      // Listen for GraphQL response
+      let graphQlError = "";
+      page.on("response", async (response) => {
+        try {
+          if (response.url().includes("ApiSubmitSingleApplicationFormAction")) {
+            const data = await response.json();
+            if (data.errors && data.errors.length > 0) {
+              graphQlError = data.errors.map(e => e.message).join("; ");
+            }
+          }
+        } catch {}
+      });
+
       await submitBtn.click();
-      await page.waitForTimeout(5000);
 
-      const content = await page.content();
-      const currentUrl = page.url();
-      const success = currentUrl.includes("confirmation") ||
-                      content.toLowerCase().includes("thank you") ||
-                      content.toLowerCase().includes("application submitted");
+      let success = false;
+      let confirmationUrl = page.url();
+      let errorReason = "";
 
+      for (let i = 0; i < 12; i++) {
+        await page.waitForTimeout(1000);
+        confirmationUrl = page.url();
+        const content = (await page.content()).toLowerCase();
+
+        if (
+          confirmationUrl.includes("confirmation") ||
+          confirmationUrl.includes("applied") ||
+          content.includes("thank you") ||
+          content.includes("application submitted") ||
+          content.includes("we have received your application") ||
+          content.includes("application has been submitted")
+        ) {
+          success = true;
+          break;
+        }
+
+        if (graphQlError) {
+          errorReason = graphQlError;
+          break;
+        }
+
+        const errorEl = await page.$('[role="alert"], [class*="error" i], [class*="errorMessage" i], [aria-invalid="true"]');
+        if (errorEl && (await errorEl.isVisible())) {
+          const text = (await errorEl.innerText()).trim();
+          if (text) {
+            errorReason = text;
+            break;
+          }
+        }
+      }
+
+      if (!success) {
+        if (!errorReason) {
+          errorReason = graphQlError || "Application did not navigate to confirmation page after submission";
+        }
+        if (!isHeadless) await page.waitForTimeout(3000);
+        await browser.close();
+        return { success: false, error: errorReason };
+      }
+
+      if (!isHeadless) await page.waitForTimeout(2000);
       await browser.close();
-      return { success: true, confirmationUrl: currentUrl };
+      return { success: true, confirmationUrl };
     }
 
     await browser.close();

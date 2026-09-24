@@ -108,6 +108,7 @@ export interface AutoApplyConfig {
   enabled?: boolean; // default true
   lookbackDays?: number; // default 3
   dryRun?: boolean; // default false
+  headless?: boolean; // default true (false runs headed browser so you can watch)
 }
 
 export interface SafarConfig {
@@ -189,6 +190,7 @@ export function defaultConfig(): SafarConfig {
       enabled: true,
       lookbackDays: 3,
       dryRun: false,
+      headless: true,
     },
   };
 }
@@ -500,13 +502,14 @@ export function resolveProfileForRole(
 
 function parseAutoApplyConfig(raw: unknown): AutoApplyConfig {
   if (!raw || typeof raw !== "object") {
-    return { enabled: true, lookbackDays: 3, dryRun: false };
+    return { enabled: true, lookbackDays: 3, dryRun: false, headless: true };
   }
   const r = raw as Record<string, unknown>;
   return {
     enabled: r.enabled !== false,
     lookbackDays: typeof r.lookbackDays === "number" ? r.lookbackDays : 3,
     dryRun: r.dryRun === true,
+    headless: r.headless !== false,
   };
 }
 

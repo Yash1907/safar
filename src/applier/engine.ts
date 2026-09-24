@@ -17,6 +17,7 @@ import { detectRoleType, formatRoleType, roleBadge, type RoleType } from "../rol
 export interface AutoApplyOptions {
   lookbackDays?: number; // default: 3
   dryRun?: boolean; // default: false
+  headless?: boolean; // default: true (pass false or --headed to watch browser)
   limit?: number; // max applications in this run (optional)
   role?: RoleType | "all"; // filter by role type (intern vs fulltime)
   onProgress?: (message: string) => void;
@@ -54,6 +55,7 @@ export function invokePlaywrightRunnerAsync(payload: {
   platform: string;
   profile: ProfileConfig;
   dryRun: boolean;
+  headless?: boolean;
 }): Promise<{ success: boolean; dryRun?: boolean; error?: string; message?: string }> {
   return new Promise((resolve) => {
     const runnerPath = join(__dirname, "playwright-runner.cjs");
@@ -99,10 +101,11 @@ export function invokePlaywrightRunnerAsync(payload: {
 export async function autoApplySingleJob(
   db: Database,
   job: JobRecord,
-  options: { dryRun?: boolean } = {},
+  options: { dryRun?: boolean; headless?: boolean } = {},
 ): Promise<AutoApplySingleResult> {
   const config = loadConfig();
   const dryRun = options.dryRun ?? config.autoApply?.dryRun ?? false;
+  const headless = options.headless ?? config.autoApply?.headless ?? true;
   const now = Math.floor(Date.now() / 1000);
   const roleType = detectRoleType(job);
 
@@ -161,12 +164,13 @@ export async function autoApplySingleJob(
     };
   }
 
-  // 5. Submit application headlessly via Playwright
+  // 5. Submit application via Playwright
   const applyRes = await invokePlaywrightRunnerAsync({
     url: job.url,
     platform,
     profile: resolvedProfile,
     dryRun,
+    headless,
   });
 
   if (applyRes.success) {
@@ -244,6 +248,7 @@ export async function runAutoApplyBatch(
   const config = loadConfig();
   const lookbackDays = options.lookbackDays ?? config.autoApply?.lookbackDays ?? 3;
   const dryRun = options.dryRun ?? config.autoApply?.dryRun ?? false;
+  const headless = options.headless ?? config.autoApply?.headless ?? true;
   const now = Math.floor(Date.now() / 1000);
   const cutoff = now - lookbackDays * 86400;
 
@@ -368,15 +373,16 @@ export async function runAutoApplyBatch(
       continue;
     }
 
-    // 5. Submit application headlessly via Playwright
+    // 5. Submit application via Playwright
     options.onProgress?.(
-      `Auto-applying to ${job.company} — "${job.title}" [${formatRoleType(roleType)}] (${dryRun ? "DRY-RUN" : "LIVE"})...`,
+      `Auto-applying to ${job.company} — "${job.title}" [${formatRoleType(roleType)}] (${dryRun ? "DRY-RUN" : "LIVE"}${headless ? "" : " [HEADED]"})...`,
     );
     const applyRes = await invokePlaywrightRunnerAsync({
       url: job.url,
       platform,
       profile: resolvedProfile,
       dryRun,
+      headless,
     });
 
     if (applyRes.success) {
