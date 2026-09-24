@@ -73,7 +73,9 @@
     "resumePath": "C:\\path\\to\\resume.pdf",
     "linkedinUrl": "https://linkedin.com/in/johndoe",
     "githubUrl": "https://github.com/johndoe",
+    "githubOnlyIfRequired": true,
     "portfolioUrl": "https://johndoe.dev",
+    "willingToRelocate": true,
     "address": {
       "city": "San Francisco",
       "state": "CA",
@@ -90,7 +92,8 @@
     },
     "workAuthorization": {
       "authorizedInUS": true,
-      "requiresSponsorship": false
+      "requiresSponsorship": false,
+      "willingToRelocate": true
     },
     "demographics": {
       "gender": "Decline to Self-Identify",
@@ -100,14 +103,18 @@
     },
     "intern": {
       "resumePath": "C:\\path\\to\\intern_resume.pdf",
+      "willingToRelocate": true,
       "education": {
-        "graduationYear": 2027
+        "graduationYear": 2027,
+        "graduationMonth": "August"
       }
     },
     "fulltime": {
       "resumePath": "C:\\path\\to\\fulltime_resume.pdf",
+      "willingToRelocate": true,
       "education": {
-        "graduationYear": 2026
+        "graduationYear": 2026,
+        "graduationMonth": "May"
       }
     }
   },

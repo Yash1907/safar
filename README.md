@@ -106,7 +106,9 @@ Create or edit your configuration at `~/.config/safar/config.json` (or `%APPDATA
     "resumePath": "C:\\Users\\Jane\\Documents\\resume.pdf",
     "linkedinUrl": "https://linkedin.com/in/janedoe",
     "githubUrl": "https://github.com/janedoe",
+    "githubOnlyIfRequired": true,
     "portfolioUrl": "https://janedoe.dev",
+    "willingToRelocate": true,
     "address": {
       "city": "San Francisco",
       "state": "CA",
@@ -123,7 +125,8 @@ Create or edit your configuration at `~/.config/safar/config.json` (or `%APPDATA
     },
     "workAuthorization": {
       "authorizedInUS": true,
-      "requiresSponsorship": false
+      "requiresSponsorship": false,
+      "willingToRelocate": true
     },
     "demographics": {
       "gender": "Decline to Self-Identify",
@@ -133,14 +136,18 @@ Create or edit your configuration at `~/.config/safar/config.json` (or `%APPDATA
     },
     "intern": {
       "resumePath": "C:\\Users\\Jane\\Documents\\resume_intern.pdf",
+      "willingToRelocate": true,
       "education": {
-        "graduationYear": 2027
+        "graduationYear": 2027,
+        "graduationMonth": "August"
       }
     },
     "fulltime": {
       "resumePath": "C:\\Users\\Jane\\Documents\\resume_fulltime.pdf",
+      "willingToRelocate": true,
       "education": {
-        "graduationYear": 2026
+        "graduationYear": 2026,
+        "graduationMonth": "May"
       }
     }
   },
@@ -152,10 +159,14 @@ Create or edit your configuration at `~/.config/safar/config.json` (or `%APPDATA
 }
 ```
 
-#### 🎓 Intern vs. Full-Time Role Profiles
+#### 🎓 Intern vs. Full-Time Role Profiles & Preferences
 Safar automatically categorizes positions into **Internship** (`intern`) vs **Full-Time / New Grad** (`fulltime` / `ft`) using title keywords and source repositories.
 
-You can customize your application per role type by adding `"intern"` and `"fulltime"` (or `"ft"`) overrides directly inside `"profile"`. Safar seamlessly uses the matching resume, graduation year, or contact details when auto-applying to that role type while falling back to the base profile for any shared fields.
+You can customize your application per role type by adding `"intern"` and `"fulltime"` (or `"ft"`) overrides directly inside `"profile"`.
+- **Graduation Dates**: Specify `graduationYear` (e.g. `2027`) and `graduationMonth` (as number `5` or string `"May"`, `"August"`, etc.) independently for intern vs full-time.
+- **Relocation & Work Auth**: Set `willingToRelocate: true/false` globally or override per role. Safar handles standard relocation, onsite/hybrid commute, and 18+ legal age questions automatically.
+- **Conditional GitHub**: Set `"githubOnlyIfRequired": true` to provide your GitHub link only when the application explicitly marks it as mandatory.
+- **Demographics**: Standard voluntary self-identification fields (gender, race/ethnicity, veteran status, disability) default to `"Decline to Self-Identify"`. Safar fuzzy-matches whatever preference you configure.
 
 ---
 

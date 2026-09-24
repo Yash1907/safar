@@ -148,4 +148,63 @@ describe("profile resolution for roles", () => {
     const resolved = resolveProfileForRole(ftProfile, "fulltime");
     expect(resolved?.resumePath).toBe("/resumes/ft_only.pdf");
   });
+
+  it("supports graduationMonth as string or number per role", () => {
+    const multiMonthProfile: ProfileConfig = {
+      firstName: "Taylor",
+      lastName: "Swift",
+      email: "taylor@example.com",
+      phone: "555-0199",
+      resumePath: "/resumes/base.pdf",
+      education: {
+        school: "NYU",
+        graduationYear: 2026,
+        graduationMonth: "May",
+      },
+      intern: {
+        education: {
+          graduationYear: 2027,
+          graduationMonth: "December",
+        },
+      },
+      fulltime: {
+        education: {
+          graduationYear: 2026,
+          graduationMonth: 5,
+        },
+      },
+    };
+
+    const internResolved = resolveProfileForRole(multiMonthProfile, "intern");
+    expect(internResolved?.education?.graduationMonth).toBe("December");
+    expect(internResolved?.education?.graduationYear).toBe(2027);
+
+    const ftResolved = resolveProfileForRole(multiMonthProfile, "fulltime");
+    expect(ftResolved?.education?.graduationMonth).toBe(5);
+    expect(ftResolved?.education?.graduationYear).toBe(2026);
+  });
+
+  it("supports githubOnlyIfRequired and willingToRelocate overrides", () => {
+    const profileWithPrefs: ProfileConfig = {
+      firstName: "Morgan",
+      lastName: "Lee",
+      email: "morgan@example.com",
+      phone: "555-9988",
+      resumePath: "/resumes/base.pdf",
+      githubUrl: "https://github.com/morgan",
+      githubOnlyIfRequired: true,
+      willingToRelocate: true,
+      fulltime: {
+        willingToRelocate: false,
+      },
+    };
+
+    const internResolved = resolveProfileForRole(profileWithPrefs, "intern");
+    expect(internResolved?.githubOnlyIfRequired).toBe(true);
+    expect(internResolved?.willingToRelocate).toBe(true);
+
+    const ftResolved = resolveProfileForRole(profileWithPrefs, "fulltime");
+    expect(ftResolved?.githubOnlyIfRequired).toBe(true);
+    expect(ftResolved?.willingToRelocate).toBe(false);
+  });
 });

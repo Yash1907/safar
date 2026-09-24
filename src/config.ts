@@ -31,7 +31,7 @@ export interface EducationConfig {
   degree?: string; // e.g. "Bachelor of Science"
   discipline?: string; // e.g. "Computer Science"
   graduationYear?: number; // e.g. 2026
-  graduationMonth?: number; // 1-12
+  graduationMonth?: number | string; // 1-12, "05", or "May"
   gpa?: string; // e.g. "3.8"
 }
 
@@ -42,6 +42,12 @@ export interface DemographicsConfig {
   disability?: string; // default "Decline to Self-Identify"
 }
 
+export interface WorkAuthorizationConfig {
+  authorizedInUS?: boolean; // default true
+  requiresSponsorship?: boolean; // default false
+  willingToRelocate?: boolean; // default true
+}
+
 export interface RoleProfileOverride {
   firstName?: string;
   lastName?: string;
@@ -50,7 +56,9 @@ export interface RoleProfileOverride {
   resumePath?: string;
   linkedinUrl?: string;
   githubUrl?: string;
+  githubOnlyIfRequired?: boolean;
   portfolioUrl?: string;
+  willingToRelocate?: boolean;
   address?: {
     city?: string;
     state?: string;
@@ -58,10 +66,7 @@ export interface RoleProfileOverride {
     postalCode?: string;
   };
   education?: Partial<EducationConfig>;
-  workAuthorization?: {
-    authorizedInUS?: boolean;
-    requiresSponsorship?: boolean;
-  };
+  workAuthorization?: WorkAuthorizationConfig;
   demographics?: DemographicsConfig;
 }
 
@@ -73,7 +78,9 @@ export interface ProfileConfig {
   resumePath: string;
   linkedinUrl?: string;
   githubUrl?: string;
+  githubOnlyIfRequired?: boolean; // if true, only supplies GitHub when field is required
   portfolioUrl?: string;
+  willingToRelocate?: boolean; // default true
   address?: {
     city?: string;
     state?: string;
@@ -81,10 +88,7 @@ export interface ProfileConfig {
     postalCode?: string;
   };
   education?: EducationConfig;
-  workAuthorization?: {
-    authorizedInUS?: boolean; // default true
-    requiresSponsorship?: boolean; // default false
-  };
+  workAuthorization?: WorkAuthorizationConfig;
   demographics?: DemographicsConfig;
 
   /** Overrides used when applying to internship roles */
@@ -237,7 +241,9 @@ function parseRoleProfileOverride(raw: unknown): RoleProfileOverride | undefined
   if (typeof r.resumePath === "string" && r.resumePath.trim()) override.resumePath = r.resumePath.trim();
   if (typeof r.linkedinUrl === "string") override.linkedinUrl = r.linkedinUrl.trim();
   if (typeof r.githubUrl === "string") override.githubUrl = r.githubUrl.trim();
+  if (typeof r.githubOnlyIfRequired === "boolean") override.githubOnlyIfRequired = r.githubOnlyIfRequired;
   if (typeof r.portfolioUrl === "string") override.portfolioUrl = r.portfolioUrl.trim();
+  if (typeof r.willingToRelocate === "boolean") override.willingToRelocate = r.willingToRelocate;
 
   if (r.address && typeof r.address === "object") {
     override.address = {
@@ -264,7 +270,7 @@ function parseRoleProfileOverride(raw: unknown): RoleProfileOverride | undefined
           ? r.education.graduationYear
           : undefined,
       graduationMonth:
-        typeof r.education.graduationMonth === "number"
+        typeof r.education.graduationMonth === "number" || typeof r.education.graduationMonth === "string"
           ? r.education.graduationMonth
           : undefined,
       gpa: r.education.gpa ? String(r.education.gpa).trim() : undefined,
@@ -280,6 +286,10 @@ function parseRoleProfileOverride(raw: unknown): RoleProfileOverride | undefined
       requiresSponsorship:
         typeof r.workAuthorization.requiresSponsorship === "boolean"
           ? r.workAuthorization.requiresSponsorship
+          : undefined,
+      willingToRelocate:
+        typeof r.workAuthorization.willingToRelocate === "boolean"
+          ? r.workAuthorization.willingToRelocate
           : undefined,
     };
   }
@@ -320,7 +330,12 @@ function parseProfileConfig(raw: unknown): ProfileConfig | null {
     resumePath: typeof r.resumePath === "string" ? r.resumePath.trim() : "",
     linkedinUrl: typeof r.linkedinUrl === "string" ? r.linkedinUrl.trim() : undefined,
     githubUrl: typeof r.githubUrl === "string" ? r.githubUrl.trim() : undefined,
+    githubOnlyIfRequired: r.githubOnlyIfRequired === true,
     portfolioUrl: typeof r.portfolioUrl === "string" ? r.portfolioUrl.trim() : undefined,
+    willingToRelocate:
+      typeof r.willingToRelocate === "boolean"
+        ? r.willingToRelocate
+        : r.workAuthorization?.willingToRelocate !== false,
     address:
       r.address && typeof r.address === "object"
         ? {
@@ -347,7 +362,7 @@ function parseProfileConfig(raw: unknown): ProfileConfig | null {
                 ? r.education.graduationYear
                 : undefined,
             graduationMonth:
-              typeof r.education.graduationMonth === "number"
+              typeof r.education.graduationMonth === "number" || typeof r.education.graduationMonth === "string"
                 ? r.education.graduationMonth
                 : undefined,
             gpa: r.education.gpa ? String(r.education.gpa).trim() : undefined,
@@ -358,8 +373,9 @@ function parseProfileConfig(raw: unknown): ProfileConfig | null {
         ? {
             authorizedInUS: r.workAuthorization.authorizedInUS !== false,
             requiresSponsorship: r.workAuthorization.requiresSponsorship === true,
+            willingToRelocate: r.workAuthorization.willingToRelocate !== false,
           }
-        : { authorizedInUS: true, requiresSponsorship: false },
+        : { authorizedInUS: true, requiresSponsorship: false, willingToRelocate: true },
     demographics:
       r.demographics && typeof r.demographics === "object"
         ? {
@@ -394,6 +410,13 @@ export function resolveProfileForRole(
     return profile;
   }
 
+  const willingToRelocate =
+    override.willingToRelocate !== undefined
+      ? override.willingToRelocate
+      : (override.workAuthorization?.willingToRelocate !== undefined
+          ? override.workAuthorization.willingToRelocate
+          : (profile.willingToRelocate ?? profile.workAuthorization?.willingToRelocate ?? true));
+
   return {
     ...profile,
     firstName: override.firstName ?? profile.firstName,
@@ -403,7 +426,12 @@ export function resolveProfileForRole(
     resumePath: override.resumePath ?? profile.resumePath,
     linkedinUrl: override.linkedinUrl !== undefined ? override.linkedinUrl : profile.linkedinUrl,
     githubUrl: override.githubUrl !== undefined ? override.githubUrl : profile.githubUrl,
+    githubOnlyIfRequired:
+      override.githubOnlyIfRequired !== undefined
+        ? override.githubOnlyIfRequired
+        : profile.githubOnlyIfRequired,
     portfolioUrl: override.portfolioUrl !== undefined ? override.portfolioUrl : profile.portfolioUrl,
+    willingToRelocate,
     address: override.address
       ? { ...profile.address, ...override.address }
       : profile.address,
@@ -433,8 +461,11 @@ export function resolveProfileForRole(
             override.workAuthorization.requiresSponsorship !== undefined
               ? override.workAuthorization.requiresSponsorship
               : (profile.workAuthorization?.requiresSponsorship ?? false),
+          willingToRelocate,
         }
-      : profile.workAuthorization,
+      : (profile.workAuthorization
+          ? { ...profile.workAuthorization, willingToRelocate }
+          : { authorizedInUS: true, requiresSponsorship: false, willingToRelocate }),
     demographics: override.demographics
       ? { ...profile.demographics, ...override.demographics }
       : profile.demographics,
