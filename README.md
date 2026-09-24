@@ -109,6 +109,8 @@ Create or edit your configuration at `~/.config/safar/config.json` (or `%APPDATA
     "githubOnlyIfRequired": true,
     "portfolioUrl": "https://janedoe.dev",
     "willingToRelocate": true,
+    "startDate": "Immediately",
+    "desiredSalary": "Negotiable",
     "address": {
       "city": "San Francisco",
       "state": "CA",
@@ -138,6 +140,8 @@ Create or edit your configuration at `~/.config/safar/config.json` (or `%APPDATA
     "intern": {
       "resumePath": "C:\\Users\\Jane\\Documents\\resume_intern.pdf",
       "willingToRelocate": true,
+      "startDate": "Summer 2026",
+      "desiredSalary": "Negotiable",
       "education": {
         "graduationYear": 2027,
         "graduationMonth": "August"
@@ -146,6 +150,8 @@ Create or edit your configuration at `~/.config/safar/config.json` (or `%APPDATA
     "fulltime": {
       "resumePath": "C:\\Users\\Jane\\Documents\\resume_fulltime.pdf",
       "willingToRelocate": true,
+      "startDate": "Immediately",
+      "desiredSalary": "Negotiable",
       "education": {
         "graduationYear": 2026,
         "graduationMonth": "May"

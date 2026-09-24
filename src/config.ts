@@ -60,6 +60,8 @@ export interface RoleProfileOverride {
   githubOnlyIfRequired?: boolean;
   portfolioUrl?: string;
   willingToRelocate?: boolean;
+  startDate?: string; // e.g. "Immediately", "May 2026", "Summer 2026"
+  desiredSalary?: string | number; // e.g. "Negotiable", "$120,000", or 120000
   address?: {
     city?: string;
     state?: string;
@@ -82,6 +84,8 @@ export interface ProfileConfig {
   githubOnlyIfRequired?: boolean; // if true, only supplies GitHub when field is required
   portfolioUrl?: string;
   willingToRelocate?: boolean; // default true
+  startDate?: string; // e.g. "Immediately", "May 2026", "Summer 2026"
+  desiredSalary?: string | number; // e.g. "Negotiable", "$120,000", or 120000
   address?: {
     city?: string;
     state?: string;
@@ -245,6 +249,8 @@ function parseRoleProfileOverride(raw: unknown): RoleProfileOverride | undefined
   if (typeof r.githubOnlyIfRequired === "boolean") override.githubOnlyIfRequired = r.githubOnlyIfRequired;
   if (typeof r.portfolioUrl === "string") override.portfolioUrl = r.portfolioUrl.trim();
   if (typeof r.willingToRelocate === "boolean") override.willingToRelocate = r.willingToRelocate;
+  if (typeof r.startDate === "string" && r.startDate.trim()) override.startDate = r.startDate.trim();
+  if (typeof r.desiredSalary === "string" || typeof r.desiredSalary === "number") override.desiredSalary = r.desiredSalary;
 
   if (r.address && typeof r.address === "object") {
     override.address = {
@@ -341,6 +347,8 @@ function parseProfileConfig(raw: unknown): ProfileConfig | null {
       typeof r.willingToRelocate === "boolean"
         ? r.willingToRelocate
         : r.workAuthorization?.willingToRelocate !== false,
+    startDate: typeof r.startDate === "string" ? r.startDate.trim() : undefined,
+    desiredSalary: typeof r.desiredSalary === "string" || typeof r.desiredSalary === "number" ? r.desiredSalary : undefined,
     address:
       r.address && typeof r.address === "object"
         ? {
@@ -441,6 +449,8 @@ export function resolveProfileForRole(
         : profile.githubOnlyIfRequired,
     portfolioUrl: override.portfolioUrl !== undefined ? override.portfolioUrl : profile.portfolioUrl,
     willingToRelocate,
+    startDate: override.startDate !== undefined ? override.startDate : profile.startDate,
+    desiredSalary: override.desiredSalary !== undefined ? override.desiredSalary : profile.desiredSalary,
     address: override.address
       ? { ...profile.address, ...override.address }
       : profile.address,

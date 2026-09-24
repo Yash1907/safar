@@ -182,10 +182,16 @@ async function answerGeneralQuestions(page, profile, platform) {
       }
       // 9. Earliest availability / Start date
       else if (/start\s*date|earliest\s*(start|availab)|available\s*to\s*start|when.*(start|begin)/i.test(l)) {
+        const inputType = await input.getAttribute("type");
+        const defaultDateText = profile.startDate || "Immediately";
         if (isCombobox) {
-          await selectAnyOption(page, input, ["Immediately", "Flexible", "Summer 2026", "Fall 2026"]);
+          const prefs = [profile.startDate, "Immediately", "Flexible", "Summer 2026", "Fall 2026"].filter(Boolean);
+          await selectAnyOption(page, input, prefs);
+        } else if (inputType === "date") {
+          const today = new Date().toISOString().split("T")[0];
+          await input.fill(today);
         } else {
-          await input.fill("Immediately");
+          await input.fill(defaultDateText);
         }
       }
       // 10. Notice period
@@ -214,8 +220,13 @@ async function answerGeneralQuestions(page, profile, platform) {
       }
       // 13. Desired salary / Target compensation
       else if (/desired\s*salary|target\s*compensation|salary\s*expectation|compensation/i.test(l)) {
-        if (!isCombobox) {
-          await input.fill("Negotiable");
+        const inputType = await input.getAttribute("type");
+        if (inputType === "number") {
+          const numVal = profile.desiredSalary && !isNaN(Number(profile.desiredSalary)) ? String(profile.desiredSalary) : "0";
+          await input.fill(numVal);
+        } else if (!isCombobox) {
+          const salText = profile.desiredSalary !== undefined ? String(profile.desiredSalary) : "Negotiable";
+          await input.fill(salText);
         }
       }
       // 14. "If you selected other, please specify"

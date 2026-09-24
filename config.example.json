@@ -76,6 +76,8 @@
     "githubOnlyIfRequired": true,
     "portfolioUrl": "https://johndoe.dev",
     "willingToRelocate": true,
+    "startDate": "Immediately",
+    "desiredSalary": "Negotiable",
     "address": {
       "city": "San Francisco",
       "state": "CA",
@@ -105,6 +107,8 @@
     "intern": {
       "resumePath": "C:\\path\\to\\intern_resume.pdf",
       "willingToRelocate": true,
+      "startDate": "Summer 2026",
+      "desiredSalary": "Negotiable",
       "education": {
         "graduationYear": 2027,
         "graduationMonth": "August"
@@ -113,6 +117,8 @@
     "fulltime": {
       "resumePath": "C:\\path\\to\\fulltime_resume.pdf",
       "willingToRelocate": true,
+      "startDate": "Immediately",
+      "desiredSalary": "Negotiable",
       "education": {
         "graduationYear": 2026,
         "graduationMonth": "May"

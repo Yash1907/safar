@@ -207,4 +207,32 @@ describe("profile resolution for roles", () => {
     expect(ftResolved?.githubOnlyIfRequired).toBe(true);
     expect(ftResolved?.willingToRelocate).toBe(false);
   });
+
+  it("supports startDate and desiredSalary overrides", () => {
+    const profileWithStartAndSalary: ProfileConfig = {
+      firstName: "Taylor",
+      lastName: "Swift",
+      email: "taylor@example.com",
+      phone: "555-1313",
+      resumePath: "/resumes/base.pdf",
+      startDate: "Immediately",
+      desiredSalary: "Negotiable",
+      intern: {
+        startDate: "Summer 2026",
+        desiredSalary: 55,
+      },
+      fulltime: {
+        startDate: "June 2026",
+        desiredSalary: 130000,
+      },
+    };
+
+    const internResolved = resolveProfileForRole(profileWithStartAndSalary, "intern");
+    expect(internResolved?.startDate).toBe("Summer 2026");
+    expect(internResolved?.desiredSalary).toBe(55);
+
+    const ftResolved = resolveProfileForRole(profileWithStartAndSalary, "fulltime");
+    expect(ftResolved?.startDate).toBe("June 2026");
+    expect(ftResolved?.desiredSalary).toBe(130000);
+  });
 });
