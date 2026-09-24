@@ -188,8 +188,8 @@ async function answerGeneralQuestions(page, profile, platform) {
           const prefs = [profile.startDate, "Immediately", "Flexible", "Summer 2026", "Fall 2026"].filter(Boolean);
           await selectAnyOption(page, input, prefs);
         } else if (inputType === "date") {
-          const today = new Date().toISOString().split("T")[0];
-          await input.fill(today);
+          const pickerVal = formatDateForPicker(profile.startDate);
+          await input.fill(pickerVal);
         } else {
           await input.fill(defaultDateText);
         }
@@ -302,6 +302,48 @@ function normalizeMonth(m) {
   }
   const str = String(m).trim();
   return [str];
+}
+
+function formatDateForPicker(val) {
+  if (!val) return new Date().toISOString().split("T")[0];
+  const str = String(val).trim();
+
+  // Already YYYY-MM-DD
+  if (/^\d{4}-\d{2}-\d{2}$/.test(str)) {
+    return str;
+  }
+  // YYYY-M-D
+  const ymdMatch = str.match(/^(\d{4})-(\d{1,2})-(\d{1,2})$/);
+  if (ymdMatch) {
+    const y = ymdMatch[1];
+    const m = ymdMatch[2].padStart(2, "0");
+    const d = ymdMatch[3].padStart(2, "0");
+    return `${y}-${m}-${d}`;
+  }
+  // MM/DD/YYYY
+  const mdyMatch = str.match(/^(\d{1,2})\/(\d{1,2})\/(\d{4})$/);
+  if (mdyMatch) {
+    const m = mdyMatch[1].padStart(2, "0");
+    const d = mdyMatch[2].padStart(2, "0");
+    const y = mdyMatch[3];
+    return `${y}-${m}-${d}`;
+  }
+  // Season heuristics like "Summer 2026", "Fall 2026", "Spring 2026"
+  const seasonMatch = str.match(/\b(summer|fall|spring|winter)\s*(\d{4})?\b/i);
+  if (seasonMatch) {
+    const season = seasonMatch[1].toLowerCase();
+    const year = seasonMatch[2] || String(new Date().getFullYear());
+    if (season === "summer") return `${year}-06-01`;
+    if (season === "fall") return `${year}-09-01`;
+    if (season === "spring") return `${year}-01-15`;
+    if (season === "winter") return `${year}-12-01`;
+  }
+  // Try Date.parse
+  const parsed = new Date(str);
+  if (!isNaN(parsed.getTime())) {
+    return parsed.toISOString().split("T")[0];
+  }
+  return new Date().toISOString().split("T")[0];
 }
 
 async function runAutoApply({ url, platform, profile, dryRun }) {
