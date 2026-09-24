@@ -185,8 +185,14 @@ Scan all active jobs from the past 3 days, classify application forms, and auto-
 # Test form filling without actually submitting
 bun run src/index.tsx --auto-apply --dry-run
 
+# Run with a visible browser window to watch form filling live
+bun run src/index.tsx --auto-apply --dry-run --headed
+
 # Run live auto-apply
 bun run src/index.tsx --auto-apply
+
+# Run live with visible browser window
+bun run src/index.tsx --auto-apply --headed
 
 # Apply only to internship roles using your intern profile
 bun run src/index.tsx --auto-apply --role intern
@@ -218,7 +224,8 @@ Usage:
 Options:
   --sync           Fetch latest jobs from all configured sources
   --auto-apply     Auto-apply to default Greenhouse & Ashby jobs (past 3 days)
-  --dry-run        Test form filling headlessly without submitting
+  --dry-run        Test form filling without submitting
+  --headed         Run with visible browser window (watch form filling live)
   --days <N>       Lookback days for auto-apply (default: 3)
   --limit <N>      Maximum jobs to auto-apply to
   --role <type>    Filter auto-apply by role: intern, ft, or all (default: all)
