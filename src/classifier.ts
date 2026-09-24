@@ -24,10 +24,13 @@ export interface ClassificationResult {
 // Regex patterns that define allowed standard/default questions
 const STANDARD_FIELD_PATTERNS = [
   // Contact & Personal Info
-  /\bname\b/i,
+  /\bnames?\b/i,
   /\bfirst\s*name\b/i,
   /\blast\s*name\b/i,
   /\bfull\s*name\b/i,
+  /\blegal\s*name\b/i,
+  /\bsurname\b/i,
+  /\bmiddle\s*name\b/i,
   /\bpreferred\s*name\b/i,
   /\bemail\b/i,
   /\bphone\b/i,
@@ -41,6 +44,8 @@ const STANDARD_FIELD_PATTERNS = [
   /\bzip\b/i,
   /\blocation\b/i,
   /\bcurrent\s*location\b/i,
+  /\bwhere\s*(are\s*you|do\s*you)\s*(currently\s*)?(located|live|reside|work|intend)\b/i,
+  /\bintended\s*work\s*location\b/i,
 
   // Resume & Documents
   /\bresume\b/i,
@@ -56,50 +61,104 @@ const STANDARD_FIELD_PATTERNS = [
   /\btwitter\b/i,
   /\bsocial\s*media\b/i,
   /\burl\b/i,
+  /\blink\b/i,
 
-  // Education / School
+  // Education / Academic
   /\bschool\b/i,
   /\buniversity\b/i,
   /\bcollege\b/i,
+  /\binstitution\b/i,
   /\bdegree\b/i,
   /\bdiscipline\b/i,
   /\bmajor\b/i,
   /\bfield\s*of\s*study\b/i,
   /\beducation\b/i,
   /\bgraduation\b/i,
+  /\bgraduate\b/i,
+  /\bgraduating\b/i,
+  /\bexpect(ed|ing)?\s*to\s*graduate\b/i,
+  /\bstudent\b/i,
+  /\benrolled\b/i,
+  /\bclass\s*of\b/i,
   /\bgpa\b/i,
+  /\bgrade\s*point\s*average\b/i,
   /\bacademic\b/i,
+  /\bcoursework\b/i,
+  /\bstandardized\s*test\b/i,
+  /\bsat\b/i,
+  /\bact\b/i,
+  /\bgre\b/i,
 
-  // Experience
+  // Experience & Employment
   /\bexperience\b/i,
   /\bemployment\b/i,
   /\bwork\s*history\b/i,
   /\bcompany\b/i,
+  /\bemployer\b/i,
   /\bjob\s*title\b/i,
+  /\bcurrent\s*(title|company|role|employer)\b/i,
 
-  // Standard Work Auth / Compliance
+  // Work Authorization / Legal Right to Work / Immigration
+  /\bright\s*to\s*work\b/i,
+  /\blegal\s*rights?\b/i,
   /\bauthorized\s*to\s*work\b/i,
-  /\blegally\s*authorized\b/i,
-  /\bwork\s*authorization\b/i,
-  /\bvisas?\s*(sponsorship)?\b/i,
+  /\bauthori[sz]ation\b/i,
+  /\blegally\s*(authorized|eligible|permitted|entitled)\b/i,
+  /\blawfully\s*(authorized|eligible|permitted|entitled)\b/i,
+  /\beligib(le|ility)\s*to\s*work\b/i,
+  /\bwork\s*permit\b/i,
+  /\bemployment\s*authori[sz]ation\b/i,
+  /\bimmigration\s*status\b/i,
+  /\bcitizen(ship)?\b/i,
+  /\bpermanent\s*resident\b/i,
+  /\bgreen\s*card\b/i,
+  /\bvisas?\b/i,
+  /\bsponsorship\b/i,
   /\brequire\s*(visa\s*)?sponsorship\b/i,
   /\bnow\s*or\s*in\s*the\s*future.*sponsorship\b/i,
   /\bh-?1b\b/i,
+  /\bopt\b/i,
+  /\bcpt\b/i,
+  /\bstem\s*opt\b/i,
   /\bu\.?s\.?\s*person\b/i,
   /\bitar\b/i,
   /\bexport\s*control\b/i,
-  /\b18\s*years\s*of\s*age\b/i,
+
+  // Workplace Preferences & Requirements
+  /\b18\s*(years|or\s*older|\+)\b/i,
+  /\bat\s*least\s*18\b/i,
   /\bage\s*requirement\b/i,
+  /\blegal\s*age\b/i,
   /\bonsite\b/i,
   /\bcommute\b/i,
+  /\bin-?office\b/i,
+  /\boffice\b/i,
   /\brelocate\b/i,
+  /\brelocation\b/i,
   /\bhybrid\b/i,
+  /\bdays?\s*(per|a)\s*week\b/i,
+  /\bwork\s*out\s*of\b/i,
+  /\bwork\s*from\b/i,
+  /\btravel\b/i,
+
+  // Availability & Term
   /\bstart\s*date\b/i,
+  /\bearliest\s*(start|availab\w*)\b/i,
+  /\bavailab(le|ility)\b/i,
+  /\bwhen.*(start|begin)\b/i,
+  /\blook\s*to\s*start\b/i,
+  /\bseason\b/i,
+  /\bterm\b/i,
+  /\bsemester\b/i,
+  /\bquarter\b/i,
+  /\bspring|summer|fall|winter\b/i,
 
   // EEO Demographics (Voluntary Self-ID)
   /\bgender\b/i,
   /\brace\b/i,
   /\bethnicity\b/i,
+  /\bhispanic\b/i,
+  /\blatino\b/i,
   /\bveteran\b/i,
   /\bdisability\b/i,
   /\bvoluntary\s*self-identification\b/i,
@@ -116,8 +175,40 @@ const STANDARD_FIELD_PATTERNS = [
   /\bwhatsapp\b/i,
   /\backnowledge\b/i,
   /\bcertify\b/i,
-  /\bhear\s*about\b/i, // "How did you hear about us?"
+  /\baffirm\b/i,
+  /\bagreement\b/i,
+
+  // Source & Referral
+  /\bhear\s*about\b/i,
+  /\bconnect(ed)?\s*with\s*us\b/i,
+  /\bhow\s*did\s*you\s*(hear|find|connect)\b/i,
+  /\bwhere\s*did\s*you\s*(hear|find)\b/i,
+  /\bsource\b/i,
   /\breferral\b/i,
+  /\breferred\b/i,
+
+  // Standard Company / Employment Checks
+  /\bpreviously\s*(worked|employed|applied)\b/i,
+  /\bformer\s*(employee|intern)\b/i,
+  /\bever\s*worked\s*at\b/i,
+  /\bnon-?compete\b/i,
+  /\bnotice\s*period\b/i,
+  /\brestrictive\s*covenant\b/i,
+  /\bconflict\s*of\s*interest\b/i,
+  /\bbackground\s*check\b/i,
+  /\bdrug\s*(screen|test)\b/i,
+
+  // Compensation / Salary (Numeric or Standard Rate)
+  /\bcompensation\b/i,
+  /\bsalary\b/i,
+  /\bpay\s*expectation\b/i,
+  /\bdesired\s*salary\b/i,
+  /\btarget\s*compensation\b/i,
+
+  // Clarifications / Other
+  /\bif\s*you\s*selected\s*.*other\b/i,
+  /\bplease\s*specify\b/i,
+  /\bother\b/i,
 ];
 
 // Patterns that identify custom/essay questions that DISQUALIFY a job from being "default"
@@ -128,16 +219,17 @@ const CUSTOM_QUESTION_PATTERNS = [
   /\bproud(est)?\b/i,
   /\bdescribe\b/i,
   /\btell\s+us\b/i,
-  /\bshare\s+(about|with\s+us|a\s+project|how)\b/i,
+  /\bshare\s+(about|with\s+us|a\s+project|how|something|an\s+example|details)\b/i,
   /\bwhat\s+(makes|motivates|interests|excites|drives|inspires)\b/i,
-  /\bwhat\s+is\s+the\b/i,
+  /\bwhat\s+is\s+the\s+(most|hardest|biggest|greatest)\b/i,
   /\bwhat\s+are\s+you\s+looking\b/i,
   /\bwriting\s+sample\b/i,
   /\bcode\s+sample\b/i,
   /\btake-?home\b/i,
   /\bessay\b/i,
   /\bcover\s*letter\s*\(required\)\b/i,
-  /\bsalary\s+(expectation|requirement)s?\b/i,
+  /\b\d+\s*(to\s*\d+\s*)?sentences?\b/i,
+  /\bexplain\s*your\s*interest\b/i,
 ];
 
 /**

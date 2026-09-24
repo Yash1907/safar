@@ -126,7 +126,8 @@ Create or edit your configuration at `~/.config/safar/config.json` (or `%APPDATA
     "workAuthorization": {
       "authorizedInUS": true,
       "requiresSponsorship": false,
-      "willingToRelocate": true
+      "willingToRelocate": true,
+      "statusText": "US Citizen"
     },
     "demographics": {
       "gender": "Decline to Self-Identify",

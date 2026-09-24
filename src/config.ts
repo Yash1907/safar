@@ -46,6 +46,7 @@ export interface WorkAuthorizationConfig {
   authorizedInUS?: boolean; // default true
   requiresSponsorship?: boolean; // default false
   willingToRelocate?: boolean; // default true
+  statusText?: string; // e.g. "US Citizen", "Permanent Resident", or custom right-to-work text
 }
 
 export interface RoleProfileOverride {
@@ -291,6 +292,10 @@ function parseRoleProfileOverride(raw: unknown): RoleProfileOverride | undefined
         typeof r.workAuthorization.willingToRelocate === "boolean"
           ? r.workAuthorization.willingToRelocate
           : undefined,
+      statusText:
+        typeof r.workAuthorization.statusText === "string"
+          ? r.workAuthorization.statusText.trim()
+          : undefined,
     };
   }
 
@@ -374,6 +379,10 @@ function parseProfileConfig(raw: unknown): ProfileConfig | null {
             authorizedInUS: r.workAuthorization.authorizedInUS !== false,
             requiresSponsorship: r.workAuthorization.requiresSponsorship === true,
             willingToRelocate: r.workAuthorization.willingToRelocate !== false,
+            statusText:
+              typeof r.workAuthorization.statusText === "string"
+                ? r.workAuthorization.statusText.trim()
+                : undefined,
           }
         : { authorizedInUS: true, requiresSponsorship: false, willingToRelocate: true },
     demographics:
@@ -462,6 +471,10 @@ export function resolveProfileForRole(
               ? override.workAuthorization.requiresSponsorship
               : (profile.workAuthorization?.requiresSponsorship ?? false),
           willingToRelocate,
+          statusText:
+            override.workAuthorization.statusText !== undefined
+              ? override.workAuthorization.statusText
+              : profile.workAuthorization?.statusText,
         }
       : (profile.workAuthorization
           ? { ...profile.workAuthorization, willingToRelocate }

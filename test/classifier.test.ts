@@ -81,9 +81,25 @@ describe("isStandardQuestion", () => {
   it("identifies work authorization and EEO fields", () => {
     expect(isStandardQuestion("Are you legally authorized to work in the United States?")).toBe(true);
     expect(isStandardQuestion("Will you now or in the future require visa sponsorship?")).toBe(true);
+    expect(isStandardQuestion("Do you have the legal right to work in the USA?")).toBe(true);
+    expect(isStandardQuestion("Do you have legal rights to work in the USA?")).toBe(true);
+    expect(isStandardQuestion("Please provide your right to work status")).toBe(true);
+    expect(isStandardQuestion("Are you currently eligible to work in the United States?")).toBe(true);
     expect(isStandardQuestion("Voluntary Self-Identification of Disability")).toBe(true);
     expect(isStandardQuestion("Gender")).toBe(true);
     expect(isStandardQuestion("Veteran Status")).toBe(true);
+  });
+
+  it("identifies general standard questions like legal name, location, commute, availability, and age", () => {
+    expect(isStandardQuestion("Have you added your full legal name and surname (including any middle names)?")).toBe(true);
+    expect(isStandardQuestion("How did you hear about this role?")).toBe(true);
+    expect(isStandardQuestion("How did you connect with us?")).toBe(true);
+    expect(isStandardQuestion("Where are you currently located?")).toBe(true);
+    expect(isStandardQuestion("When is your earliest avaiablity to start in a full-time role?")).toBe(true);
+    expect(isStandardQuestion("Are you at least 18 years old?")).toBe(true);
+    expect(isStandardQuestion("Are you willing and able to work out of our Boston office 5 days per week?")).toBe(true);
+    expect(isStandardQuestion("If you selected \"Other\", please specify below")).toBe(true);
+    expect(isStandardQuestion("What is your desired salary?")).toBe(true);
   });
 });
 
@@ -99,6 +115,7 @@ describe("isCustomQuestion", () => {
     expect(isCustomQuestion("Describe a technical challenge you solved")).toBe(true);
     expect(isCustomQuestion("Tell us about a time you led a team project")).toBe(true);
     expect(isCustomQuestion("What is your proudest accomplishment?")).toBe(true);
+    expect(isCustomQuestion("Please share 3-5 sentences explaining your interest in the Blockchain/Web3 industry.")).toBe(true);
   });
 
   it("returns false for standard fields", () => {
@@ -107,6 +124,8 @@ describe("isCustomQuestion", () => {
     expect(isCustomQuestion("School")).toBe(false);
     expect(isCustomQuestion("LinkedIn Profile")).toBe(false);
     expect(isCustomQuestion("Are you authorized to work in the US?")).toBe(false);
+    expect(isCustomQuestion("Do you have the legal right to work in the USA?")).toBe(false);
+    expect(isCustomQuestion("Have you added your full legal name and surname (including any middle names)?")).toBe(false);
   });
 });
 

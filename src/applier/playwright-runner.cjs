@@ -15,23 +15,227 @@ async function fillField(page, selectors, value) {
   return false;
 }
 
+async function selectAnyOption(page, targetElOrSelector, preferredValues) {
+  try {
+    const el = typeof targetElOrSelector === "string" ? await page.$(targetElOrSelector) : targetElOrSelector;
+    if (!el || !(await el.isVisible())) return false;
+
+    const isStandardSelect = await el.evaluate(e => e.tagName === "SELECT");
+    if (isStandardSelect) {
+      const options = await el.$$eval("option", opts => opts.map(o => ({ value: o.value, text: o.text.trim() })));
+      for (const pref of preferredValues) {
+        const match = options.find(o => o.text.toLowerCase().includes(pref.toLowerCase()) || o.value.toLowerCase().includes(pref.toLowerCase()));
+        if (match) {
+          await el.selectOption(match.value);
+          return true;
+        }
+      }
+      return false;
+    }
+
+    // Combobox or react-select
+    const control = await el.evaluateHandle(e => {
+      return e.closest(".select__control") || e.closest("[class*='select']") || e;
+    });
+
+    await control.click();
+    await page.waitForTimeout(250);
+
+    const menu = await page.$(".select__menu, [role='listbox']");
+    if (menu) {
+      const options = await page.$$(".select__option, [role='option']");
+      for (const pref of preferredValues) {
+        for (const opt of options) {
+          const text = (await opt.innerText()).trim();
+          if (text.toLowerCase().includes(pref.toLowerCase())) {
+            await opt.click();
+            await page.waitForTimeout(200);
+            return true;
+          }
+        }
+      }
+    }
+    // Close menu if no match found
+    await page.keyboard.press("Escape").catch(() => {});
+  } catch {}
+  return false;
+}
+
 async function selectOption(page, selectSelectors, preferredValues) {
   for (const sel of selectSelectors) {
     try {
       const el = await page.$(sel);
       if (el && await el.isVisible()) {
-        const options = await el.$$eval("option", opts => opts.map(o => ({ value: o.value, text: o.text.trim() })));
-        for (const pref of preferredValues) {
-          const match = options.find(o => o.text.toLowerCase().includes(pref.toLowerCase()) || o.value.toLowerCase().includes(pref.toLowerCase()));
-          if (match) {
-            await el.selectOption(match.value);
-            return true;
-          }
-        }
+        const ok = await selectAnyOption(page, el, preferredValues);
+        if (ok) return true;
       }
     } catch {}
   }
   return false;
+}
+
+async function answerGeneralQuestions(page, profile, platform) {
+  const containerSelector = platform === "ashby"
+    ? "[class*='fieldEntry'], .field, .form-group, div:has(> label)"
+    : ".field, [class*='field'], .form-group, div:has(> label)";
+
+  const fields = await page.$$(containerSelector);
+  for (const f of fields) {
+    try {
+      const labelEl = await f.$("label");
+      let labelText = "";
+      if (labelEl) {
+        labelText = (await labelEl.innerText()).trim();
+      }
+      if (!labelText) {
+        labelText = await f.evaluate(el => el.getAttribute("aria-label") || el.innerText.split("\n")[0] || "");
+      }
+      if (!labelText) continue;
+      const l = labelText.toLowerCase().replace(/\s+/g, " ");
+
+      const input = await f.$("input:not([type='hidden']):not([type='file']):not([type='submit']), select, textarea");
+      if (!input || !(await input.isVisible())) continue;
+
+      const isFilled = await input.evaluate(el => {
+        if (el.tagName === "SELECT") return el.selectedIndex > 0;
+        if (el.value && el.value.trim().length > 0) return true;
+        const control = el.closest(".select__control");
+        if (control && !control.textContent.includes("Select...")) return true;
+        return false;
+      });
+      if (isFilled) continue;
+
+      const isCombobox = await input.evaluate(el =>
+        el.getAttribute("role") === "combobox" || el.tagName === "SELECT" || !!el.closest(".select__control")
+      );
+
+      // 1. Work authorization status (e.g. "Please provide your right to work status")
+      if (/status|type|explain|specify|current\s*immigration/i.test(l) && (/right\s*to\s*work|work\s*auth|immigration|eligib/i.test(l))) {
+        const statusText = profile.workAuthorization?.statusText ||
+          (profile.workAuthorization?.requiresSponsorship
+            ? "Authorized to work (requires sponsorship)"
+            : "US Citizen / Authorized to work in US without restriction");
+        if (isCombobox) {
+          await selectAnyOption(page, input, ["Citizen", "Permanent Resident", "Authorized", "No Sponsorship", "US Citizen"]);
+        } else {
+          await input.fill(statusText);
+        }
+      }
+      // 2. Right to work / Work authorization (Yes/No)
+      else if (/right\s*to\s*work|authorized\s*to\s*work|eligible\s*to\s*work|legal\s*right|work\s*authori[sz]ation|lawfully\s*authorized/i.test(l)) {
+        const preferred = profile.workAuthorization?.authorizedInUS === false ? ["No", "false"] : ["Yes", "true"];
+        if (isCombobox) {
+          await selectAnyOption(page, input, preferred);
+        } else {
+          await input.fill(preferred[0]);
+        }
+      }
+      // 3. Visa sponsorship (Yes/No)
+      else if (/sponsorship|visa\s*sponsorship/i.test(l)) {
+        const preferred = profile.workAuthorization?.requiresSponsorship ? ["Yes", "true"] : ["No", "false"];
+        if (isCombobox) {
+          await selectAnyOption(page, input, preferred);
+        } else {
+          await input.fill(preferred[0]);
+        }
+      }
+      // 4. Full legal name / Surname confirmation
+      else if (/full\s*legal\s*name|legal\s*name.*surname|middle\s*name/i.test(l)) {
+        if (isCombobox) {
+          await selectAnyOption(page, input, ["Yes", "true"]);
+        } else {
+          await input.fill("Yes");
+        }
+      }
+      // 5. How did you hear / Connect / Source / Referral
+      else if (/hear\s*about|connect(ed)?\s*with\s*us|source|referral/i.test(l)) {
+        if (isCombobox) {
+          await selectAnyOption(page, input, ["LinkedIn", "Job Board", "Online", "Website", "Other"]);
+        } else {
+          await input.fill("LinkedIn");
+        }
+      }
+      // 6. Willing to Relocate
+      else if (/relocat/i.test(l)) {
+        const preferred = profile.willingToRelocate === false ? ["No", "false"] : ["Yes", "true"];
+        if (isCombobox) {
+          await selectAnyOption(page, input, preferred);
+        } else {
+          await input.fill(preferred[0]);
+        }
+      }
+      // 7. Commute / Onsite / Hybrid / Office presence / Days per week
+      else if (/commute|onsite|in-?office|hybrid|days?\s*(a|per)\s*week|work\s*(out\s*of|from)\s*our\s*.*office/i.test(l)) {
+        if (isCombobox) {
+          await selectAnyOption(page, input, ["Yes", "true"]);
+        } else {
+          await input.fill("Yes");
+        }
+      }
+      // 8. 18+ years of age / Legal age
+      else if (/18\s*(years|or\s*older|\+)|at\s*least\s*18|legal\s*age/i.test(l)) {
+        if (isCombobox) {
+          await selectAnyOption(page, input, ["Yes", "true"]);
+        } else {
+          await input.fill("Yes");
+        }
+      }
+      // 9. Earliest availability / Start date
+      else if (/start\s*date|earliest\s*(start|availab)|available\s*to\s*start|when.*(start|begin)/i.test(l)) {
+        if (isCombobox) {
+          await selectAnyOption(page, input, ["Immediately", "Flexible", "Summer 2026", "Fall 2026"]);
+        } else {
+          await input.fill("Immediately");
+        }
+      }
+      // 10. Notice period
+      else if (/notice\s*period/i.test(l)) {
+        if (isCombobox) {
+          await selectAnyOption(page, input, ["None", "Immediate", "0"]);
+        } else {
+          await input.fill("None");
+        }
+      }
+      // 11. Previously employed / Former employee / Applied before
+      else if (/previously\s*(worked|employed|applied)|former\s*employee|ever\s*worked\s*at/i.test(l)) {
+        if (isCombobox) {
+          await selectAnyOption(page, input, ["No", "false"]);
+        } else {
+          await input.fill("No");
+        }
+      }
+      // 12. Non-compete
+      else if (/non-?compete|restrictive\s*covenant/i.test(l)) {
+        if (isCombobox) {
+          await selectAnyOption(page, input, ["No", "None", "false"]);
+        } else {
+          await input.fill("None");
+        }
+      }
+      // 13. Desired salary / Target compensation
+      else if (/desired\s*salary|target\s*compensation|salary\s*expectation|compensation/i.test(l)) {
+        if (!isCombobox) {
+          await input.fill("Negotiable");
+        }
+      }
+      // 14. "If you selected other, please specify"
+      else if (/if\s*you\s*selected\s*.*other|please\s*specify/i.test(l)) {
+        if (!isCombobox) {
+          await input.fill("N/A");
+        }
+      }
+      // 15. Demographics in general loop
+      else if (/gender/i.test(l)) {
+        await selectAnyOption(page, input, [profile.demographics?.gender || "Decline", "Decline to Self-Identify"]);
+      } else if (/race|ethnicity|hispanic|latino/i.test(l)) {
+        await selectAnyOption(page, input, [profile.demographics?.race || "Decline", "Decline to Self-Identify", "No"]);
+      } else if (/veteran/i.test(l)) {
+        await selectAnyOption(page, input, [profile.demographics?.veteran || "Decline", "not a protected", "Decline to Self-Identify"]);
+      } else if (/disability/i.test(l)) {
+        await selectAnyOption(page, input, [profile.demographics?.disability || "Decline", "No, I do not", "Decline to Self-Identify"]);
+      }
+    } catch {}
+  }
 }
 
 async function isFieldRequired(page, el) {
@@ -107,6 +311,12 @@ async function runAutoApply({ url, platform, profile, dryRun }) {
     const resumeExists = profile.resumePath && fs.existsSync(profile.resumePath);
 
     if (platform === "greenhouse") {
+      // 0. Country combobox (if present, select first to avoid React re-rendering clearing inputs)
+      const countryEl = await page.$('#country, input[name*="country" i]');
+      if (countryEl && await countryEl.isVisible()) {
+        await selectAnyOption(page, countryEl, ["United States", "USA", "US"]);
+      }
+
       // 1. First & Last Name
       await fillField(page, [
         'input[name*="first_name" i]',
@@ -254,7 +464,10 @@ async function runAutoApply({ url, platform, profile, dryRun }) {
       await selectOption(page, ['select[name*="veteran" i]', 'select[id*="veteran" i]'], [profile.demographics?.veteran || "Decline", "not a protected", "Decline to Self-Identify"]);
       await selectOption(page, ['select[name*="disability" i]', 'select[id*="disability" i]'], [profile.demographics?.disability || "Decline", "No, I do not", "Decline to Self-Identify"]);
 
-      // 9. Submit or Dry-run
+      // 9. General Question Answering (custom text inputs/comboboxes for right to work, legal name, referral, etc.)
+      await answerGeneralQuestions(page, profile, "greenhouse");
+
+      // 10. Submit or Dry-run
       if (dryRun) {
         await browser.close();
         return { success: true, dryRun: true, message: "Dry-run: Greenhouse form filled successfully" };
@@ -338,6 +551,8 @@ async function runAutoApply({ url, platform, profile, dryRun }) {
 
       // 6. Work auth, relocation, and compliance radios/buttons in Ashby
       const relocateYes = profile.willingToRelocate !== false;
+      const authYes = profile.workAuthorization?.authorizedInUS !== false;
+      const sponsorshipYes = profile.workAuthorization?.requiresSponsorship === true;
       try {
         const allButtons = await page.$$('button:has-text("Yes"), button:has-text("No"), label:has-text("Yes"), label:has-text("No")');
         for (const btn of allButtons) {
@@ -345,16 +560,23 @@ async function runAutoApply({ url, platform, profile, dryRun }) {
           const parentText = await btn.evaluate(el => el.closest('div')?.textContent || '');
           const pLower = parentText.toLowerCase();
 
-          if (pLower.includes('authorized to work') || pLower.includes('onsite') || pLower.includes('commute') || pLower.includes('18 years')) {
-            if (text.toLowerCase().includes('yes')) await btn.click();
+          if (pLower.includes('authorized to work') || pLower.includes('right to work') || pLower.includes('onsite') || pLower.includes('commute') || pLower.includes('18 years') || pLower.includes('hybrid') || pLower.includes('in-office')) {
+            if (authYes && text.toLowerCase().includes('yes')) await btn.click();
+            if (!authYes && text.toLowerCase().includes('no')) await btn.click();
           } else if (pLower.includes('relocate') || pLower.includes('relocation')) {
             if (relocateYes && text.toLowerCase().includes('yes')) await btn.click();
             if (!relocateYes && text.toLowerCase().includes('no')) await btn.click();
           } else if (pLower.includes('sponsorship')) {
+            if (!sponsorshipYes && text.toLowerCase().includes('no')) await btn.click();
+            if (sponsorshipYes && text.toLowerCase().includes('yes')) await btn.click();
+          } else if (pLower.includes('previously worked') || pLower.includes('former employee') || pLower.includes('non-compete')) {
             if (text.toLowerCase().includes('no')) await btn.click();
           }
         }
       } catch {}
+
+      // 7. General Question Answering for Ashby
+      await answerGeneralQuestions(page, profile, "ashby");
 
       if (dryRun) {
         await browser.close();
