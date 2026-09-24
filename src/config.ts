@@ -2,6 +2,9 @@ import { homedir } from "node:os";
 import { join } from "node:path";
 import { existsSync, readFileSync } from "node:fs";
 
+import type { RoleType } from "./role.ts";
+export type { RoleType } from "./role.ts";
+
 export interface RepoSourceConfig {
   id: string;
   displayName: string;
@@ -39,6 +42,29 @@ export interface DemographicsConfig {
   disability?: string; // default "Decline to Self-Identify"
 }
 
+export interface RoleProfileOverride {
+  firstName?: string;
+  lastName?: string;
+  email?: string;
+  phone?: string;
+  resumePath?: string;
+  linkedinUrl?: string;
+  githubUrl?: string;
+  portfolioUrl?: string;
+  address?: {
+    city?: string;
+    state?: string;
+    country?: string;
+    postalCode?: string;
+  };
+  education?: Partial<EducationConfig>;
+  workAuthorization?: {
+    authorizedInUS?: boolean;
+    requiresSponsorship?: boolean;
+  };
+  demographics?: DemographicsConfig;
+}
+
 export interface ProfileConfig {
   firstName: string;
   lastName: string;
@@ -60,6 +86,13 @@ export interface ProfileConfig {
     requiresSponsorship?: boolean; // default false
   };
   demographics?: DemographicsConfig;
+
+  /** Overrides used when applying to internship roles */
+  intern?: RoleProfileOverride;
+  /** Overrides used when applying to full-time roles */
+  fulltime?: RoleProfileOverride;
+  /** Alias for fulltime */
+  ft?: RoleProfileOverride;
 }
 
 export interface AutoApplyConfig {
@@ -192,6 +225,77 @@ function parseDiscordConfig(raw: unknown): DiscordConfig | null {
   };
 }
 
+function parseRoleProfileOverride(raw: unknown): RoleProfileOverride | undefined {
+  if (!raw || typeof raw !== "object") return undefined;
+  const r = raw as Record<string, any>;
+  const override: RoleProfileOverride = {};
+
+  if (typeof r.firstName === "string" && r.firstName.trim()) override.firstName = r.firstName.trim();
+  if (typeof r.lastName === "string" && r.lastName.trim()) override.lastName = r.lastName.trim();
+  if (typeof r.email === "string" && r.email.trim()) override.email = r.email.trim();
+  if (typeof r.phone === "string" && r.phone.trim()) override.phone = r.phone.trim();
+  if (typeof r.resumePath === "string" && r.resumePath.trim()) override.resumePath = r.resumePath.trim();
+  if (typeof r.linkedinUrl === "string") override.linkedinUrl = r.linkedinUrl.trim();
+  if (typeof r.githubUrl === "string") override.githubUrl = r.githubUrl.trim();
+  if (typeof r.portfolioUrl === "string") override.portfolioUrl = r.portfolioUrl.trim();
+
+  if (r.address && typeof r.address === "object") {
+    override.address = {
+      city: typeof r.address.city === "string" ? r.address.city.trim() : undefined,
+      state: typeof r.address.state === "string" ? r.address.state.trim() : undefined,
+      country: typeof r.address.country === "string" ? r.address.country.trim() : undefined,
+      postalCode:
+        typeof r.address.postalCode === "string"
+          ? r.address.postalCode.trim()
+          : undefined,
+    };
+  }
+
+  if (r.education && typeof r.education === "object") {
+    override.education = {
+      school: typeof r.education.school === "string" ? r.education.school.trim() : undefined,
+      degree: typeof r.education.degree === "string" ? r.education.degree.trim() : undefined,
+      discipline:
+        typeof r.education.discipline === "string"
+          ? r.education.discipline.trim()
+          : undefined,
+      graduationYear:
+        typeof r.education.graduationYear === "number"
+          ? r.education.graduationYear
+          : undefined,
+      graduationMonth:
+        typeof r.education.graduationMonth === "number"
+          ? r.education.graduationMonth
+          : undefined,
+      gpa: r.education.gpa ? String(r.education.gpa).trim() : undefined,
+    };
+  }
+
+  if (r.workAuthorization && typeof r.workAuthorization === "object") {
+    override.workAuthorization = {
+      authorizedInUS:
+        typeof r.workAuthorization.authorizedInUS === "boolean"
+          ? r.workAuthorization.authorizedInUS
+          : undefined,
+      requiresSponsorship:
+        typeof r.workAuthorization.requiresSponsorship === "boolean"
+          ? r.workAuthorization.requiresSponsorship
+          : undefined,
+    };
+  }
+
+  if (r.demographics && typeof r.demographics === "object") {
+    override.demographics = {
+      gender: r.demographics.gender,
+      race: r.demographics.race,
+      veteran: r.demographics.veteran,
+      disability: r.demographics.disability,
+    };
+  }
+
+  return override;
+}
+
 function parseProfileConfig(raw: unknown): ProfileConfig | null {
   if (!raw || typeof raw !== "object") return null;
   const r = raw as Record<string, any>;
@@ -202,6 +306,12 @@ function parseProfileConfig(raw: unknown): ProfileConfig | null {
   ) {
     return null;
   }
+
+  const internRaw = r.intern ?? r.profiles?.intern;
+  const ftRaw = r.fulltime ?? r.ft ?? r.profiles?.fulltime ?? r.profiles?.ft;
+  const internOverride = parseRoleProfileOverride(internRaw);
+  const ftOverride = parseRoleProfileOverride(ftRaw);
+
   return {
     firstName: r.firstName.trim(),
     lastName: r.lastName.trim(),
@@ -259,6 +369,78 @@ function parseProfileConfig(raw: unknown): ProfileConfig | null {
             disability: r.demographics.disability || "Decline to Self-Identify",
           }
         : undefined,
+    intern: internOverride,
+    fulltime: ftOverride,
+    ft: ftOverride,
+  };
+}
+
+/**
+ * Merges a base ProfileConfig with any role-specific overrides (intern vs fulltime/ft).
+ * If no role overrides exist, returns the base profile untouched.
+ */
+export function resolveProfileForRole(
+  profile: ProfileConfig | null,
+  roleType: RoleType,
+): ProfileConfig | null {
+  if (!profile) return null;
+
+  const override =
+    roleType === "intern"
+      ? profile.intern
+      : (profile.fulltime ?? profile.ft);
+
+  if (!override) {
+    return profile;
+  }
+
+  return {
+    ...profile,
+    firstName: override.firstName ?? profile.firstName,
+    lastName: override.lastName ?? profile.lastName,
+    email: override.email ?? profile.email,
+    phone: override.phone ?? profile.phone,
+    resumePath: override.resumePath ?? profile.resumePath,
+    linkedinUrl: override.linkedinUrl !== undefined ? override.linkedinUrl : profile.linkedinUrl,
+    githubUrl: override.githubUrl !== undefined ? override.githubUrl : profile.githubUrl,
+    portfolioUrl: override.portfolioUrl !== undefined ? override.portfolioUrl : profile.portfolioUrl,
+    address: override.address
+      ? { ...profile.address, ...override.address }
+      : profile.address,
+    education: override.education
+      ? {
+          school: override.education.school ?? profile.education?.school ?? "",
+          degree: override.education.degree ?? profile.education?.degree,
+          discipline: override.education.discipline ?? profile.education?.discipline,
+          graduationYear:
+            override.education.graduationYear !== undefined
+              ? override.education.graduationYear
+              : profile.education?.graduationYear,
+          graduationMonth:
+            override.education.graduationMonth !== undefined
+              ? override.education.graduationMonth
+              : profile.education?.graduationMonth,
+          gpa: override.education.gpa ?? profile.education?.gpa,
+        }
+      : profile.education,
+    workAuthorization: override.workAuthorization
+      ? {
+          authorizedInUS:
+            override.workAuthorization.authorizedInUS !== undefined
+              ? override.workAuthorization.authorizedInUS
+              : (profile.workAuthorization?.authorizedInUS ?? true),
+          requiresSponsorship:
+            override.workAuthorization.requiresSponsorship !== undefined
+              ? override.workAuthorization.requiresSponsorship
+              : (profile.workAuthorization?.requiresSponsorship ?? false),
+        }
+      : profile.workAuthorization,
+    demographics: override.demographics
+      ? { ...profile.demographics, ...override.demographics }
+      : profile.demographics,
+    intern: profile.intern,
+    fulltime: profile.fulltime,
+    ft: profile.ft,
   };
 }
 

@@ -3,6 +3,7 @@ import { Box, Text } from "ink";
 import type { SkippedJobRecord } from "../db/repo.ts";
 import { formatAge } from "../format.ts";
 import { detectJobSite } from "../site.ts";
+import { detectRoleType, roleBadge } from "../role.ts";
 
 const COL = { site: 12, company: 18, title: 26, reason: 32, age: 4 };
 const GAP = " ";
@@ -62,6 +63,7 @@ export function SkippedList({
         const age = formatAge(job.datePosted ?? job.firstSeenAt, nowMs);
         const site = detectJobSite(job.url);
         const siteColor = site.color;
+        const role = roleBadge(detectRoleType(job));
 
         return (
           <Box key={job.id}>
@@ -77,6 +79,8 @@ export function SkippedList({
               <Text color="yellow">{pad(job.skipReason, COL.reason)}</Text>
               {GAP}
               <Text dimColor>{pad(age, COL.age)}</Text>
+              {GAP}
+              <Text color="cyan">{role}</Text>
             </Text>
           </Box>
         );

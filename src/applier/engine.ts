@@ -10,13 +10,15 @@ import {
 import { isJobAlreadyApplied } from "../dedup.ts";
 import { classifyJob, detectPlatform } from "../classifier.ts";
 import { detectJobSite } from "../site.ts";
-import { loadConfig, type ProfileConfig } from "../config.ts";
+import { loadConfig, resolveProfileForRole, type ProfileConfig } from "../config.ts";
 import { sendApplicationAlert } from "../discord.ts";
+import { detectRoleType, formatRoleType, roleBadge, type RoleType } from "../role.ts";
 
 export interface AutoApplyOptions {
   lookbackDays?: number; // default: 3
   dryRun?: boolean; // default: false
   limit?: number; // max applications in this run (optional)
+  role?: RoleType | "all"; // filter by role type (intern vs fulltime)
   onProgress?: (message: string) => void;
 }
 
@@ -30,6 +32,7 @@ export interface AutoApplyBatchResult {
     company: string;
     title: string;
     url: string;
+    roleType?: RoleType;
     status: "applied" | "skipped" | "already_applied";
     reason?: string;
   }[];
@@ -123,6 +126,12 @@ export async function runAutoApplyBatch(
       updatedAt: raw.updated_at ?? null,
     };
 
+    // 0. Detect role type and check role filter if specified
+    const roleType = detectRoleType(job);
+    if (options.role && options.role !== "all" && roleType !== options.role) {
+      continue;
+    }
+
     // 1. Check if already applied or reposted
     const dedup = isJobAlreadyApplied(db, job);
     if (dedup.applied) {
@@ -132,6 +141,7 @@ export async function runAutoApplyBatch(
         company: job.company,
         title: job.title,
         url: job.url,
+        roleType,
         status: "already_applied",
         reason: dedup.reason,
       });
@@ -150,6 +160,7 @@ export async function runAutoApplyBatch(
         company: job.company,
         title: job.title,
         url: job.url,
+        roleType,
         status: "skipped",
         reason,
       });
@@ -157,7 +168,7 @@ export async function runAutoApplyBatch(
     }
 
     // 3. Classify job questions
-    options.onProgress?.(`Classifying ${job.company} — "${job.title}" (${platform})...`);
+    options.onProgress?.(`Classifying ${job.company} — "${job.title}" [${roleBadge(roleType).toUpperCase()}] (${platform})...`);
     const classification = await classifyJob(job);
 
     if (!classification.isDefaultJob) {
@@ -169,15 +180,17 @@ export async function runAutoApplyBatch(
         company: job.company,
         title: job.title,
         url: job.url,
+        roleType,
         status: "skipped",
         reason,
       });
       continue;
     }
 
-    // 4. Job is a default job! Check profile configuration
-    if (!config.profile) {
-      const reason = "Profile details missing in ~/.config/safar/config.json";
+    // 4. Job is a default job! Check profile configuration for this role type
+    const resolvedProfile = resolveProfileForRole(config.profile, roleType);
+    if (!resolvedProfile || !resolvedProfile.firstName || !resolvedProfile.lastName || !resolvedProfile.email) {
+      const reason = `Profile details missing in ~/.config/safar/config.json for ${formatRoleType(roleType)}`;
       recordSkippedJob(db, job.id, reason, now);
       summary.skippedCount++;
       summary.results.push({
@@ -185,6 +198,7 @@ export async function runAutoApplyBatch(
         company: job.company,
         title: job.title,
         url: job.url,
+        roleType,
         status: "skipped",
         reason,
       });
@@ -192,11 +206,13 @@ export async function runAutoApplyBatch(
     }
 
     // 5. Submit application headlessly via Playwright
-    options.onProgress?.(`Auto-applying to ${job.company} — "${job.title}" (${dryRun ? "DRY-RUN" : "LIVE"})...`);
+    options.onProgress?.(
+      `Auto-applying to ${job.company} — "${job.title}" [${formatRoleType(roleType)}] (${dryRun ? "DRY-RUN" : "LIVE"})...`,
+    );
     const applyRes = invokePlaywrightRunner({
       url: job.url,
       platform,
-      profile: config.profile,
+      profile: resolvedProfile,
       dryRun,
     });
 
@@ -211,6 +227,7 @@ export async function runAutoApplyBatch(
             title: job.title,
             url: job.url,
             platform,
+            roleType,
             appliedAt: now,
           });
         }
@@ -221,6 +238,7 @@ export async function runAutoApplyBatch(
         company: job.company,
         title: job.title,
         url: job.url,
+        roleType,
         status: "applied",
         reason: dryRun ? "Dry-run succeeded" : "Application submitted",
       });
@@ -233,6 +251,7 @@ export async function runAutoApplyBatch(
         company: job.company,
         title: job.title,
         url: job.url,
+        roleType,
         status: "skipped",
         reason,
       });

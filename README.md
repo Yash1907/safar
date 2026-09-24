@@ -130,6 +130,18 @@ Create or edit your configuration at `~/.config/safar/config.json` (or `%APPDATA
       "race": "Decline to Self-Identify",
       "veteran": "Decline to Self-Identify",
       "disability": "Decline to Self-Identify"
+    },
+    "intern": {
+      "resumePath": "C:\\Users\\Jane\\Documents\\resume_intern.pdf",
+      "education": {
+        "graduationYear": 2027
+      }
+    },
+    "fulltime": {
+      "resumePath": "C:\\Users\\Jane\\Documents\\resume_fulltime.pdf",
+      "education": {
+        "graduationYear": 2026
+      }
     }
   },
   "autoApply": {
@@ -139,6 +151,11 @@ Create or edit your configuration at `~/.config/safar/config.json` (or `%APPDATA
   }
 }
 ```
+
+#### 🎓 Intern vs. Full-Time Role Profiles
+Safar automatically categorizes positions into **Internship** (`intern`) vs **Full-Time / New Grad** (`fulltime` / `ft`) using title keywords and source repositories.
+
+You can customize your application per role type by adding `"intern"` and `"fulltime"` (or `"ft"`) overrides directly inside `"profile"`. Safar seamlessly uses the matching resume, graduation year, or contact details when auto-applying to that role type while falling back to the base profile for any shared fields.
 
 ---
 
@@ -152,6 +169,12 @@ bun run src/index.tsx --auto-apply --dry-run
 
 # Run live auto-apply
 bun run src/index.tsx --auto-apply
+
+# Apply only to internship roles using your intern profile
+bun run src/index.tsx --auto-apply --role intern
+
+# Apply only to full-time roles using your full-time profile
+bun run src/index.tsx --auto-apply --role ft
 
 # Custom lookback window (e.g. past 5 days) and application limit
 bun run src/index.tsx --auto-apply --days 5 --limit 10
@@ -180,6 +203,7 @@ Options:
   --dry-run        Test form filling headlessly without submitting
   --days <N>       Lookback days for auto-apply (default: 3)
   --limit <N>      Maximum jobs to auto-apply to
+  --role <type>    Filter auto-apply by role: intern, ft, or all (default: all)
   --eod-report     Send end-of-day summary report to Discord webhook
   --scheduler      Run automated background scheduler for auto-apply & daily check
   --export <path>  Export all jobs to .csv or .json

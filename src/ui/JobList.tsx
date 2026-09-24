@@ -3,6 +3,7 @@ import { Box, Text } from "ink";
 import type { JobRecord } from "../db/repo.ts";
 import { formatAge } from "../format.ts";
 import { detectJobSite } from "../site.ts";
+import { detectRoleType, roleBadge } from "../role.ts";
 
 const COL = { site: 16, company: 18, title: 32, location: 15, age: 4 };
 const GAP = " ";
@@ -73,6 +74,7 @@ export function JobList({
         const badges: string[] = [];
         if (isNew(job)) badges.push("new");
         if (!job.active) badges.push("inactive");
+        badges.push(roleBadge(detectRoleType(job)));
 
         return (
           <Box key={job.id}>

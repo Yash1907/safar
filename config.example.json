@@ -97,6 +97,18 @@
       "race": "Decline to Self-Identify",
       "veteran": "Decline to Self-Identify",
       "disability": "Decline to Self-Identify"
+    },
+    "intern": {
+      "resumePath": "C:\\path\\to\\intern_resume.pdf",
+      "education": {
+        "graduationYear": 2027
+      }
+    },
+    "fulltime": {
+      "resumePath": "C:\\path\\to\\fulltime_resume.pdf",
+      "education": {
+        "graduationYear": 2026
+      }
     }
   },
   "autoApply": {

@@ -1,4 +1,5 @@
 import { formatAge } from "./format.ts";
+import { formatRoleType, type RoleType } from "./role.ts";
 
 export interface DiscordEmbedField {
   name: string;
@@ -56,6 +57,7 @@ export async function sendApplicationAlert(
     title: string;
     url: string;
     platform: string;
+    roleType?: RoleType | string;
     appliedAt?: number;
   },
 ): Promise<{ success: boolean; error?: string }> {
@@ -64,18 +66,31 @@ export async function sendApplicationAlert(
     timeZoneName: "short",
   });
 
+  const fields: DiscordEmbedField[] = [
+    { name: "Company", value: info.company, inline: true },
+    { name: "Platform", value: info.platform.toUpperCase(), inline: true },
+  ];
+
+  if (info.roleType) {
+    const roleLabel =
+      info.roleType === "intern" || info.roleType === "fulltime"
+        ? formatRoleType(info.roleType as RoleType)
+        : String(info.roleType);
+    fields.push({ name: "Role Type", value: roleLabel, inline: true });
+  }
+
+  fields.push(
+    { name: "Applied At", value: dateStr, inline: true },
+    { name: "Job Link", value: `[View Application](${info.url})`, inline: false },
+  );
+
   const payload: DiscordWebhookPayload = {
     embeds: [
       {
         title: `✅ Auto-Applied: ${info.title}`,
         url: info.url,
         color: 0x2ecc71, // Green
-        fields: [
-          { name: "Company", value: info.company, inline: true },
-          { name: "Platform", value: info.platform.toUpperCase(), inline: true },
-          { name: "Applied At", value: dateStr, inline: true },
-          { name: "Job Link", value: `[View Application](${info.url})`, inline: false },
-        ],
+        fields,
         footer: { text: "safar auto-applier" },
         timestamp: new Date(nowMs).toISOString(),
       },
@@ -97,6 +112,7 @@ export async function sendEndOfDayReport(
       title: string;
       url: string;
       platform: string;
+      roleType?: RoleType | string;
       appliedAt: number;
     }[];
   },
@@ -113,7 +129,8 @@ export async function sendEndOfDayReport(
         hour: "2-digit",
         minute: "2-digit",
       });
-      return `${index + 1}. **${app.company}** — [${app.title}](${app.url}) (${app.platform.toUpperCase()}) at \`${timeStr}\``;
+      const roleBadgeStr = app.roleType ? `\`[${app.roleType === "intern" ? "Intern" : "FT"}]\` ` : "";
+      return `${index + 1}. **${app.company}** — [${app.title}](${app.url}) ${roleBadgeStr}(${app.platform.toUpperCase()}) at \`${timeStr}\``;
     });
 
     // Discord descriptions have a 4096 character limit

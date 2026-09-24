@@ -14,6 +14,7 @@ import { runAutoApplyBatch } from "./applier/engine.ts";
 import { sendEndOfDayReport } from "./discord.ts";
 import { detectPlatform } from "./classifier.ts";
 import { listApplicationsForDay } from "./db/repo.ts";
+import { detectRoleType, type RoleType } from "./role.ts";
 
 interface Args {
   sync: boolean;
@@ -21,6 +22,7 @@ interface Args {
   dryRun: boolean;
   days?: number;
   limit?: number;
+  role?: RoleType | "all";
   eodReport: boolean;
   scheduler: boolean;
   db?: string;
@@ -54,6 +56,11 @@ function parseArgs(argv: string[]): Args {
       args.days = Number(argv[++i]);
     } else if (arg === "--limit") {
       args.limit = Number(argv[++i]);
+    } else if (arg === "--role") {
+      const val = argv[++i]?.toLowerCase();
+      if (val === "intern") args.role = "intern";
+      else if (val === "ft" || val === "fulltime" || val === "full-time") args.role = "fulltime";
+      else if (val === "all") args.role = "all";
     } else if (arg === "--eod-report") {
       args.eodReport = true;
     } else if (arg === "--scheduler") {
@@ -139,7 +146,7 @@ async function runSheetsPull(db: ReturnType<typeof openDb>): Promise<boolean> {
 
 async function runAutoApplyCli(
   db: ReturnType<typeof openDb>,
-  options: { lookbackDays: number; dryRun: boolean; limit?: number },
+  options: { lookbackDays: number; dryRun: boolean; limit?: number; role?: RoleType | "all" },
 ): Promise<boolean> {
   const config = loadConfig();
   if (!config.profile) {
@@ -148,13 +155,15 @@ async function runAutoApplyCli(
     );
   }
 
+  const roleDesc = options.role && options.role !== "all" ? ` [${options.role.toUpperCase()}]` : "";
   console.log(
-    `safar: starting headless auto-applier (lookback: ${options.lookbackDays} days, dry-run: ${options.dryRun})`,
+    `safar: starting headless auto-applier${roleDesc} (lookback: ${options.lookbackDays} days, dry-run: ${options.dryRun})`,
   );
   const result = await runAutoApplyBatch(db, {
     lookbackDays: options.lookbackDays,
     dryRun: options.dryRun,
     limit: options.limit,
+    role: options.role,
     onProgress: (msg) => console.log(`[auto-apply] ${msg}`),
   });
 
@@ -167,7 +176,8 @@ async function runAutoApplyCli(
   if (result.appliedCount > 0) {
     console.log("\nApplied Jobs:");
     for (const r of result.results.filter((r) => r.status === "applied")) {
-      console.log(`  ✓ ${r.company} — ${r.title} (${r.url})`);
+      const rBadge = r.roleType ? ` [${r.roleType.toUpperCase()}]` : "";
+      console.log(`  ✓ ${r.company} — ${r.title}${rBadge} (${r.url})`);
     }
   }
 
@@ -196,6 +206,7 @@ async function runEodReportCli(db: ReturnType<typeof openDb>): Promise<boolean> 
     title: app.title,
     url: app.url,
     platform: detectPlatform(app.url),
+    roleType: detectRoleType(app),
     appliedAt: app.updatedAt || nowSec,
   }));
 
@@ -288,6 +299,7 @@ Options:
   --dry-run        Test form filling headlessly without submitting
   --days <N>       Lookback days for auto-apply (default: 3)
   --limit <N>      Maximum jobs to auto-apply to
+  --role <type>    Filter auto-apply by role: intern, ft, or all (default: all)
   --eod-report     Send end-of-day summary report to Discord webhook
   --scheduler      Run automated background scheduler for auto-apply & daily check
   --export <path>  Export all jobs to .csv or .json
@@ -326,6 +338,7 @@ Options:
           lookbackDays: args.days ?? 3,
           dryRun: args.dryRun,
           limit: args.limit,
+          role: args.role,
         })) || hadError;
     }
 
