@@ -203,7 +203,8 @@ async function runAutoApplyCli(
     console.log("\nApplied Jobs:");
     for (const r of result.results.filter((r) => r.status === "applied")) {
       const rBadge = r.roleType ? ` [${r.roleType.toUpperCase()}]` : "";
-      console.log(`  ✓ ${r.company} — ${r.title}${rBadge} (${r.url})`);
+      const dbBadge = options.dryRun ? " [dry-run]" : " [saved to tracker DB]";
+      console.log(`  ✓ ${r.company} — ${r.title}${rBadge} (${r.url})${dbBadge}`);
     }
   }
 

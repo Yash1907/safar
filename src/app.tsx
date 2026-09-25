@@ -306,15 +306,17 @@ export function App({ db }: { db: Database }) {
       try {
         const res = await autoApplySingleJob(db, job);
         if (res.success) {
-          dispatch({
-            type: "UPDATE_JOB_STATUS",
-            jobId: job.id,
-            status: "applied",
-          });
-          refreshTrackedJobs();
-          refreshSkippedJobs();
-          if (job.id === state.detailJobId) {
-            dispatch({ type: "SET_STATUS_HISTORY", entries: getStatusHistory(db, job.id) });
+          if (!res.dryRun) {
+            dispatch({
+              type: "UPDATE_JOB_STATUS",
+              jobId: job.id,
+              status: "applied",
+            });
+            refreshTrackedJobs();
+            refreshSkippedJobs();
+            if (job.id === state.detailJobId) {
+              dispatch({ type: "SET_STATUS_HISTORY", entries: getStatusHistory(db, job.id) });
+            }
           }
           dispatch({
             type: "SET_STATUS_MESSAGE",

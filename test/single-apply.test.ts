@@ -1,7 +1,15 @@
 import { describe, it, expect, beforeEach, afterEach } from "bun:test";
 import { Database } from "bun:sqlite";
 import { migrate } from "../src/db/schema.ts";
-import { setStatus, type JobRecord } from "../src/db/repo.ts";
+import {
+  setStatus,
+  listTrackedJobs,
+  getStatusHistory,
+  recordSkippedJob,
+  listSkippedJobs,
+  type JobRecord,
+} from "../src/db/repo.ts";
+import { isJobAlreadyApplied } from "../src/dedup.ts";
 import { autoApplySingleJob } from "../src/applier/engine.ts";
 
 describe("autoApplySingleJob", () => {
@@ -253,6 +261,96 @@ describe("runAutoApplyBatch with search query filter", () => {
     const res = await autoApplySingleJob(db, ukJob, { usOnly: true });
     expect(res.success).toBe(false);
     expect(res.reason).toContain("Non-US location (London, UK)");
+  });
+
+  describe("database tracking and future-run deduplication", () => {
+    it("persists applied status in applications and status_history, clears skipped_jobs, and appears in listTrackedJobs", () => {
+      // 1. Initially job is in skipped_jobs (e.g. from an earlier classification failure)
+      recordSkippedJob(db, 10, "Custom questions required", now - 100);
+      expect(listSkippedJobs(db).map((s) => s.id)).toContain(10);
+
+      // 2. Mark as applied (as executed upon successful submission)
+      setStatus(db, 10, "applied", now);
+
+      // 3. Verify applications table
+      const app = db
+        .query<{ status: string; updated_at: number }, [number]>(
+          "SELECT status, updated_at FROM applications WHERE job_id = ?",
+        )
+        .get(10);
+      expect(app).toBeDefined();
+      expect(app!.status).toBe("applied");
+      expect(app!.updated_at).toBe(now);
+
+      // 4. Verify status_history
+      const history = getStatusHistory(db, 10);
+      expect(history.length).toBeGreaterThanOrEqual(1);
+      expect(history[history.length - 1]!.status).toBe("applied");
+
+      // 5. Verify skipped_jobs was cleaned up
+      expect(listSkippedJobs(db).map((s) => s.id)).not.toContain(10);
+
+      // 6. Verify job appears in listTrackedJobs for the Tracker CRM view
+      const tracked = listTrackedJobs(db);
+      const trackedJob = tracked.find((t) => t.id === 10);
+      expect(trackedJob).toBeDefined();
+      expect(trackedJob!.status).toBe("applied");
+    });
+
+    it("prevents reapplying on future batch runs and marks as already_applied", async () => {
+      const { runAutoApplyBatch } = await import("../src/applier/engine.ts");
+
+      // Job 20 (Google) is initially untracked
+      const res1 = await runAutoApplyBatch(db, {
+        lookbackDays: 3,
+        dryRun: true,
+        filter: "company:google",
+      });
+      // In dry run, it's evaluated
+      expect(res1.alreadyAppliedCount).toBe(0);
+
+      // Now simulate successful application written to DB
+      setStatus(db, 20, "applied", now);
+
+      // Run batch again
+      const res2 = await runAutoApplyBatch(db, {
+        lookbackDays: 3,
+        dryRun: true,
+        filter: "company:google",
+      });
+
+      // It must be detected as already applied and skipped
+      expect(res2.alreadyAppliedCount).toBe(1);
+      expect(res2.appliedCount).toBe(0);
+      expect(res2.results[0]!.status).toBe("already_applied");
+      expect(res2.results[0]!.reason).toContain("Already applied to this job ID (status: applied)");
+    });
+
+    it("detects reposts with same company and title across different job IDs on future runs", async () => {
+      const { runAutoApplyBatch } = await import("../src/applier/engine.ts");
+
+      // Apply to Job 20 (Google — Software Engineer)
+      setStatus(db, 20, "applied", now);
+
+      // Insert a new reposted job with a different ID (Job 99)
+      db.exec(`
+        INSERT INTO jobs (id, source_id, source_job_id, company, title, url, first_seen_at, last_seen_at, date_posted, active)
+        VALUES (99, 's2', 'repost-99', 'Google LLC', 'Software Engineer (2026)', 'https://careers.google.com/jobs/99', ${now}, ${now}, ${now}, 1)
+      `);
+
+      const res = await runAutoApplyBatch(db, {
+        lookbackDays: 3,
+        dryRun: true,
+        filter: "company:google",
+      });
+
+      // Both job 20 and repost job 99 must be skipped as already applied
+      expect(res.alreadyAppliedCount).toBe(2);
+      const repostResult = res.results.find((r) => r.jobId === 99);
+      expect(repostResult).toBeDefined();
+      expect(repostResult!.status).toBe("already_applied");
+      expect(repostResult!.reason).toContain("repost");
+    });
   });
 });
 
