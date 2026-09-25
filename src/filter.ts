@@ -1,5 +1,6 @@
 import type { JobRecord } from "./db/repo.ts";
 import { detectJobSite } from "./site.ts";
+import { isUsJob } from "./location.ts";
 
 export type ActiveMode = "active" | "any" | "false";
 
@@ -31,6 +32,7 @@ export interface FilterClause {
   notes: FilterCondition[];
   sites: FilterCondition[];
   wantNew: boolean;
+  wantUs?: boolean | null;
   freeWords: FilterCondition[];
 }
 
@@ -42,6 +44,7 @@ export type FilterAstNode =
   | { type: "freeText"; alternatives: string[] }
   | { type: "new"; wantNew: boolean }
   | { type: "active"; mode: "active" | "any" | "false" }
+  | { type: "us"; wantUs: boolean }
   | { type: "alwaysTrue" };
 
 export interface ParsedFilter {
@@ -90,11 +93,12 @@ export function parseValueAlternatives(raw: string): string[] {
     .filter(Boolean);
 }
 
-export function normalizeField(raw: string): FieldKey | "new" | "active" | "is" | null {
+export function normalizeField(raw: string): FieldKey | "new" | "active" | "is" | "country" | null {
   const f = raw.toLowerCase();
   if (f === "company" || f === "co") return "company";
   if (f === "title" || f === "role") return "title";
   if (f === "loc" || f === "location" || f === "locations") return "loc";
+  if (f === "country" || f === "nation") return "country";
   if (f === "wm" || f === "workmodel") return "wm";
   if (f === "cat" || f === "category") return "cat";
   if (f === "src" || f === "source" || f === "sourceid") return "src";
@@ -110,7 +114,7 @@ export function normalizeField(raw: string): FieldKey | "new" | "active" | "is" 
 
 interface Token {
   type: "LPAREN" | "RPAREN" | "AND" | "OR" | "NOT" | "FIELD_LPAREN" | "TERM";
-  field?: FieldKey | "new" | "active" | "is" | null;
+  field?: FieldKey | "new" | "active" | "is" | "country" | null;
   value?: string;
   isExact?: boolean;
   isNegated?: boolean;
@@ -550,8 +554,34 @@ class QueryParser {
         node = { type: "field", field: "status", alternatives: ["tracked"] };
       } else if (val === "untracked") {
         node = { type: "field", field: "status", alternatives: ["untracked"] };
+      } else if (val === "us" || val === "usa" || val === "domestic") {
+        node = { type: "us", wantUs: true };
+      } else if (val === "non-us" || val === "nonus" || val === "intl" || val === "international" || val === "foreign") {
+        node = { type: "us", wantUs: false };
       } else {
         node = { type: "freeText", alternatives: [val] };
+      }
+    } else if (token.field === "country") {
+      const val = (token.value ?? "").toLowerCase().trim();
+      if (val === "us" || val === "usa" || val === "united states") {
+        node = { type: "us", wantUs: true };
+      } else if (val === "non-us" || val === "nonus" || val === "intl" || val === "international") {
+        node = { type: "us", wantUs: false };
+      } else {
+        node = { type: "field", field: "loc", alternatives: parseValueAlternatives(token.value ?? "") };
+      }
+    } else if (token.field === "loc") {
+      const val = (token.value ?? "").toLowerCase().trim();
+      if (val === "us" || val === "usa" || val === "united states") {
+        node = { type: "us", wantUs: true };
+      } else if (val === "non-us" || val === "nonus") {
+        node = { type: "us", wantUs: false };
+      } else {
+        const alts = token.isExact
+          ? [(token.value ?? "").trim().toLowerCase()].filter(Boolean)
+          : parseValueAlternatives(token.value ?? "");
+        if (alts.length === 0) return null;
+        node = { type: "field", field: "loc", alternatives: alts };
       }
     } else if (token.field) {
       const alts = token.isExact
@@ -589,6 +619,7 @@ function astToClauses(ast: FilterAstNode | null): FilterClause[] {
       notes: [],
       sites: [],
       wantNew: false,
+      wantUs: null,
       freeWords: [],
     };
     populateClauseFromAst(sub, clause);
@@ -605,6 +636,10 @@ function populateClauseFromAst(node: FilterAstNode, clause: FilterClause) {
   }
   if (node.type === "new") {
     if (node.wantNew) clause.wantNew = true;
+    return;
+  }
+  if (node.type === "us") {
+    clause.wantUs = node.wantUs;
     return;
   }
   if (node.type === "freeText") {
@@ -668,6 +703,9 @@ export function evaluateAst(
 
     case "new":
       return isNew(job) === node.wantNew;
+
+    case "us":
+      return node.wantUs ? isUsJob(job) : !isUsJob(job);
 
     case "active":
       if (node.mode === "any") return true;
@@ -798,6 +836,13 @@ function clauseMatches(
 
   if (clause.wantNew && !isNew(job)) {
     return false;
+  }
+
+  if (clause.wantUs !== undefined && clause.wantUs !== null) {
+    const isUs = isUsJob(job);
+    if (clause.wantUs ? !isUs : isUs) {
+      return false;
+    }
   }
 
   for (const cond of clause.notes) {

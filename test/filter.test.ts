@@ -751,6 +751,55 @@ describe("field-scoped parentheses", () => {
     );
     expect(result.map((j) => j.id)).toEqual([3]);
   });
+
+  test("is:us filters to jobs with US locations", () => {
+    const jobs = [
+      job({ id: 1, title: "SWE", locations: ["San Francisco, CA"] }),
+      job({ id: 2, title: "SWE", locations: ["Manchester, UK"] }),
+      job({ id: 3, title: "SWE", locations: ["Toronto, ON, Canada"] }),
+      job({ id: 4, title: "SWE", locations: ["Remote in USA"] }),
+    ];
+    const result = applyFilter(jobs, parseFilterQuery("is:us"), noNew);
+    expect(result.map((j) => j.id)).toEqual([1, 4]);
+
+    const resultLoc = applyFilter(jobs, parseFilterQuery("loc:us"), noNew);
+    expect(resultLoc.map((j) => j.id)).toEqual([1, 4]);
+
+    const resultCountry = applyFilter(jobs, parseFilterQuery("country:us"), noNew);
+    expect(resultCountry.map((j) => j.id)).toEqual([1, 4]);
+  });
+
+  test("is:non-us and -is:us filter to non-US locations", () => {
+    const jobs = [
+      job({ id: 1, title: "SWE", locations: ["Austin, TX"] }),
+      job({ id: 2, title: "SWE", locations: ["London, UK"] }),
+      job({ id: 3, title: "SWE", locations: ["Calgary, AB, Canada"] }),
+    ];
+    const r1 = applyFilter(jobs, parseFilterQuery("is:non-us"), noNew);
+    expect(r1.map((j) => j.id)).toEqual([2, 3]);
+
+    const r2 = applyFilter(jobs, parseFilterQuery("-is:us"), noNew);
+    expect(r2.map((j) => j.id)).toEqual([2, 3]);
+
+    const r3 = applyFilter(jobs, parseFilterQuery("-is:non-us"), noNew);
+    expect(r3.map((j) => j.id)).toEqual([1]);
+  });
+
+  test("compound query with title and US filter: title:forward,software,technology is:us", () => {
+    const jobs = [
+      job({ id: 1, title: "Software Engineer", locations: ["San Francisco, CA"] }),
+      job({ id: 2, title: "Software Engineer", locations: ["Manchester, UK"] }),
+      job({ id: 3, title: "Accountant", locations: ["New York, NY"] }),
+      job({ id: 4, title: "Technology Analyst", locations: ["Austin, TX"] }),
+      job({ id: 5, title: "Forward Deployed Engineer", locations: ["London, UK"] }),
+    ];
+    const result = applyFilter(
+      jobs,
+      parseFilterQuery("title:forward,software,technology is:us"),
+      noNew,
+    );
+    expect(result.map((j) => j.id)).toEqual([1, 4]);
+  });
 });
 
 

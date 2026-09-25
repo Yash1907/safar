@@ -110,6 +110,8 @@ export interface AutoApplyConfig {
   dryRun?: boolean; // default false
   headless?: boolean; // default true (false runs headed browser so you can watch)
   filter?: string; // search query syntax to filter target jobs (e.g. "title:forward,software,technology")
+  usOnly?: boolean; // default false; if true, only applies to US locations (excludes non-US)
+  excludeNonUS?: boolean; // alias for usOnly
 }
 
 export interface SafarConfig {
@@ -515,12 +517,16 @@ function parseAutoApplyConfig(raw: unknown): AutoApplyConfig {
           ? r.query
           : undefined;
 
+  const usOnly = r.usOnly === true || r.excludeNonUS === true || r.excludeNonUs === true;
+
   return {
     enabled: r.enabled !== false,
     lookbackDays: typeof r.lookbackDays === "number" ? r.lookbackDays : 3,
     dryRun: r.dryRun === true,
     headless: r.headless !== false,
     filter: rawFilter ? rawFilter.trim() : undefined,
+    usOnly: usOnly ? true : undefined,
+    excludeNonUS: usOnly ? true : undefined,
   };
 }
 

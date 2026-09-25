@@ -208,5 +208,52 @@ describe("runAutoApplyBatch with search query filter", () => {
     expect(result.totalScanned).toBe(1);
     expect(result.results[0]!.company).toBe("Palantir");
   });
+
+  it("filters candidate jobs to US-only when usOnly is enabled", async () => {
+    // Insert UK and Canadian jobs into the test database
+    db.exec(`
+      INSERT INTO jobs (id, source_id, source_job_id, company, title, url, locations, first_seen_at, last_seen_at, date_posted, active)
+      VALUES (60, 's1', '60', 'LondonCo', 'Software Engineer', 'https://jobs.lever.co/london/60', '["London, UK"]', ${now}, ${now}, ${now}, 1),
+             (70, 's1', '70', 'TorontoCo', 'Software Engineer', 'https://jobs.lever.co/toronto/70', '["Toronto, ON, Canada"]', ${now}, ${now}, ${now}, 1),
+             (80, 's1', '80', 'USCo', 'Software Engineer', 'https://jobs.lever.co/us/80', '["San Francisco, CA"]', ${now}, ${now}, ${now}, 1)
+    `);
+
+    const { runAutoApplyBatch } = await import("../src/applier/engine.ts");
+    const result = await runAutoApplyBatch(db, {
+      lookbackDays: 3,
+      dryRun: true,
+      usOnly: true,
+      filter: "title:software",
+    });
+
+    // Only software jobs in the US should match (Google, Meta, USCo)
+    // LondonCo, TorontoCo should be excluded by usOnly
+    const companies = result.results.map((r) => r.company);
+    expect(companies).toContain("Google");
+    expect(companies).toContain("Meta");
+    expect(companies).toContain("USCo");
+    expect(companies).not.toContain("LondonCo");
+    expect(companies).not.toContain("TorontoCo");
+  });
+
+  it("autoApplySingleJob fails with reason if usOnly is enabled and job is non-US", async () => {
+    const ukJob: JobRecord = {
+      id: 60,
+      sourceId: "s1",
+      company: "LondonCo",
+      title: "Software Engineer",
+      url: "https://boards.greenhouse.io/london/60",
+      locations: ["London, UK"],
+      active: true,
+      firstSeenAt: now,
+      lastSeenAt: now,
+      status: null,
+    };
+
+    const res = await autoApplySingleJob(db, ukJob, { usOnly: true });
+    expect(res.success).toBe(false);
+    expect(res.reason).toContain("Non-US location (London, UK)");
+  });
 });
+
 

@@ -163,6 +163,7 @@ Create or edit your configuration at `~/.config/safar/config.json` (or `%APPDATA
     "lookbackDays": 3,
     "dryRun": false,
     "headless": true,
+    "usOnly": true,
     "filter": "title:forward,software,technology"
   }
 }
@@ -196,6 +197,9 @@ bun run src/index.tsx --auto-apply
 # Run live with visible browser window
 bun run src/index.tsx --auto-apply --headed
 
+# Exclude non-US locations (apply only to US roles)
+bun run src/index.tsx --auto-apply --us-only
+
 # Apply only to internship roles using your intern profile
 bun run src/index.tsx --auto-apply --role intern
 
@@ -204,6 +208,9 @@ bun run src/index.tsx --auto-apply --role ft
 
 # Filter what you apply to using search query syntax (e.g. title keywords, locations, companies)
 bun run src/index.tsx --auto-apply --filter "title:forward,software,technology"
+
+# Exclude non-US locations within search query (using is:us or -is:non-us)
+bun run src/index.tsx --auto-apply --filter "title:forward,software,technology is:us"
 
 # Complex search filters (e.g. software/data roles, remote only, excluding senior)
 bun run src/index.tsx --auto-apply --filter "(title:software OR title:data) loc:remote -title:senior"
@@ -219,10 +226,10 @@ bun run src/index.tsx --eod-report
 ```
 
 ### Automated Background Scheduler
-Run a background daemon that periodically syncs sources, auto-applies to new listings (respecting any configured filter), and sends the EOD summary to Discord at your configured `eodSummaryTime` (default: 18:00):
+Run a background daemon that periodically syncs sources, auto-applies to new listings (respecting any configured filter and US-only preference), and sends the EOD summary to Discord at your configured `eodSummaryTime` (default: 18:00):
 ```bash
 bun run src/index.tsx --scheduler
-bun run src/index.tsx --scheduler --filter "title:forward,software,technology"
+bun run src/index.tsx --scheduler --us-only --filter "title:forward,software,technology"
 ```
 
 ### Command Line Options Reference
@@ -239,6 +246,7 @@ Options:
   --limit <N>      Maximum jobs to auto-apply to
   --role <type>    Filter auto-apply by role: intern, ft, or all (default: all)
   --filter <query> Filter auto-apply jobs by search query (e.g. 'title:forward,software,technology')
+  --us-only        Exclude non-US locations from auto-apply
   --eod-report     Send end-of-day summary report to Discord webhook
   --scheduler      Run automated background scheduler for auto-apply & daily check
   --export <path>  Export all jobs to .csv or .json

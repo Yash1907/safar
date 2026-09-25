@@ -14,6 +14,7 @@ import { loadConfig, resolveProfileForRole, type ProfileConfig } from "../config
 import { sendApplicationAlert } from "../discord.ts";
 import { detectRoleType, formatRoleType, roleBadge, type RoleType } from "../role.ts";
 import { parseFilterQuery, applyFilter } from "../filter.ts";
+import { isUsJob } from "../location.ts";
 
 export interface AutoApplyOptions {
   lookbackDays?: number; // default: 3
@@ -22,6 +23,8 @@ export interface AutoApplyOptions {
   limit?: number; // max applications in this run (optional)
   role?: RoleType | "all"; // filter by role type (intern vs fulltime)
   filter?: string; // search query syntax to filter target jobs (e.g. "title:forward,software,technology")
+  usOnly?: boolean; // exclude non-US locations
+  excludeNonUS?: boolean; // alias for usOnly
   onProgress?: (message: string) => void;
 }
 
@@ -108,13 +111,29 @@ export async function autoApplySingleJob(
     headless?: boolean;
     filter?: string;
     checkFilter?: boolean;
+    usOnly?: boolean;
+    excludeNonUS?: boolean;
   } = {},
 ): Promise<AutoApplySingleResult> {
   const config = loadConfig();
   const dryRun = options.dryRun ?? config.autoApply?.dryRun ?? false;
   const headless = options.headless ?? config.autoApply?.headless ?? true;
+  const usOnly =
+    options.usOnly === true ||
+    options.excludeNonUS === true ||
+    config.autoApply?.usOnly === true ||
+    config.autoApply?.excludeNonUS === true;
   const now = Math.floor(Date.now() / 1000);
   const roleType = detectRoleType(job);
+
+  // Check US location if usOnly is enabled
+  if (usOnly && !isUsJob(job)) {
+    return {
+      success: false,
+      roleType,
+      reason: `Non-US location (${job.locations.join(", ") || "Unknown"})`,
+    };
+  }
 
   // Check filter if explicitly provided or checkFilter is requested
   const filterQuery = options.filter ?? (options.checkFilter ? config.autoApply?.filter : undefined);
@@ -327,6 +346,20 @@ export async function runAutoApplyBatch(
     candidateJobs = applyFilter(candidateJobs, parsed, () => false);
     options.onProgress?.(
       `Filtered candidate jobs with "${effectiveFilter}": ${candidateJobs.length} match out of ${beforeCount}`,
+    );
+  }
+
+  const usOnly =
+    options.usOnly === true ||
+    options.excludeNonUS === true ||
+    config.autoApply?.usOnly === true ||
+    config.autoApply?.excludeNonUS === true;
+
+  if (usOnly) {
+    const beforeCount = candidateJobs.length;
+    candidateJobs = candidateJobs.filter((job) => isUsJob(job));
+    options.onProgress?.(
+      `Filtered out non-US locations: ${candidateJobs.length} US jobs remaining out of ${beforeCount}`,
     );
   }
 

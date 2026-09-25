@@ -130,6 +130,7 @@
     "lookbackDays": 3,
     "dryRun": false,
     "headless": true,
+    "usOnly": true,
     "filter": "title:forward,software,technology"
   }
 }

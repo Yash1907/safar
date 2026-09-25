@@ -195,5 +195,27 @@ describe("autoApply config parsing", () => {
     const config = loadConfig(path);
     expect(config.autoApply.filter).toBeUndefined();
   });
+
+  test("parses usOnly and excludeNonUS flags", () => {
+    const p1 = tmpConfigPath(
+      JSON.stringify({
+        autoApply: {
+          usOnly: true,
+        },
+      }),
+    );
+    expect(loadConfig(p1).autoApply.usOnly).toBe(true);
+
+    const p2 = tmpConfigPath(
+      JSON.stringify({
+        autoApply: {
+          excludeNonUS: true,
+        },
+      }),
+    );
+    expect(loadConfig(p2).autoApply.usOnly).toBe(true);
+    expect(loadConfig(p2).autoApply.excludeNonUS).toBe(true);
+  });
 });
+
 

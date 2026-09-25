@@ -25,6 +25,7 @@ interface Args {
   limit?: number;
   role?: RoleType | "all";
   filter?: string;
+  usOnly?: boolean;
   eodReport: boolean;
   scheduler: boolean;
   db?: string;
@@ -68,6 +69,8 @@ function parseArgs(argv: string[]): Args {
       else if (val === "all") args.role = "all";
     } else if (arg === "--filter" || arg === "-f") {
       args.filter = argv[++i];
+    } else if (arg === "--us-only" || arg === "--exclude-non-us") {
+      args.usOnly = true;
     } else if (arg === "--eod-report") {
       args.eodReport = true;
     } else if (arg === "--scheduler") {
@@ -160,6 +163,7 @@ async function runAutoApplyCli(
     limit?: number;
     role?: RoleType | "all";
     filter?: string;
+    usOnly?: boolean;
   },
 ): Promise<boolean> {
   const config = loadConfig();
@@ -171,10 +175,12 @@ async function runAutoApplyCli(
 
   const effectiveFilter = options.filter ?? config.autoApply?.filter;
   const filterDesc = effectiveFilter ? ` [filter: "${effectiveFilter}"]` : "";
+  const isUsOnly = options.usOnly ?? config.autoApply?.usOnly ?? config.autoApply?.excludeNonUS;
+  const usDesc = isUsOnly ? " [US only]" : "";
   const roleDesc = options.role && options.role !== "all" ? ` [${options.role.toUpperCase()}]` : "";
   const modeDesc = options.headed ? "headed (visible browser)" : "headless";
   console.log(
-    `safar: starting ${modeDesc} auto-applier${roleDesc}${filterDesc} (lookback: ${options.lookbackDays} days, dry-run: ${options.dryRun})`,
+    `safar: starting ${modeDesc} auto-applier${roleDesc}${usDesc}${filterDesc} (lookback: ${options.lookbackDays} days, dry-run: ${options.dryRun})`,
   );
   const result = await runAutoApplyBatch(db, {
     lookbackDays: options.lookbackDays,
@@ -183,6 +189,7 @@ async function runAutoApplyCli(
     limit: options.limit,
     role: options.role,
     filter: options.filter,
+    usOnly: options.usOnly,
     onProgress: (msg) => console.log(`[auto-apply] ${msg}`),
   });
 
@@ -250,7 +257,7 @@ async function runEodReportCli(db: ReturnType<typeof openDb>): Promise<boolean> 
 
 async function runSchedulerCli(
   db: ReturnType<typeof openDb>,
-  options: { filter?: string } = {},
+  options: { filter?: string; usOnly?: boolean } = {},
 ): Promise<boolean> {
   console.log("safar: background scheduler started. Monitoring applications and daily Discord reports...");
   const config = loadConfig();
@@ -260,7 +267,7 @@ async function runSchedulerCli(
   let lastReportedDay = "";
 
   // Run initial auto-apply
-  await runAutoApplyCli(db, { lookbackDays: 3, dryRun: false, filter: options.filter });
+  await runAutoApplyCli(db, { lookbackDays: 3, dryRun: false, filter: options.filter, usOnly: options.usOnly });
 
   // Hourly check loop
   const interval = setInterval(async () => {
@@ -282,7 +289,7 @@ async function runSchedulerCli(
     try {
       console.log("safar [scheduler]: syncing sources...");
       await syncAll(db, defaultSources());
-      await runAutoApplyCli(db, { lookbackDays: 3, dryRun: false, filter: options.filter });
+      await runAutoApplyCli(db, { lookbackDays: 3, dryRun: false, filter: options.filter, usOnly: options.usOnly });
     } catch (err) {
       console.error("safar [scheduler] error:", err);
     }
@@ -324,6 +331,7 @@ Options:
   --limit <N>      Maximum jobs to auto-apply to
   --role <type>    Filter auto-apply by role: intern, ft, or all (default: all)
   --filter <query> Filter auto-apply jobs by search query (e.g. 'title:forward,software,technology')
+  --us-only        Exclude non-US locations from auto-apply
   --eod-report     Send end-of-day summary report to Discord webhook
   --scheduler      Run automated background scheduler for auto-apply & daily check
   --export <path>  Export all jobs to .csv or .json
@@ -365,6 +373,7 @@ Options:
           limit: args.limit,
           role: args.role,
           filter: args.filter,
+          usOnly: args.usOnly,
         })) || hadError;
     }
 
@@ -373,7 +382,7 @@ Options:
     }
 
     if (args.scheduler) {
-      hadError = (await runSchedulerCli(db, { filter: args.filter })) || hadError;
+      hadError = (await runSchedulerCli(db, { filter: args.filter, usOnly: args.usOnly })) || hadError;
     }
 
     if (args.sheetsPull) {
