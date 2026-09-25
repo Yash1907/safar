@@ -38,20 +38,39 @@ async function selectAnyOption(page, targetElOrSelector, preferredValues) {
       return e.closest(".select__control") || e.closest("[class*='select']") || e;
     });
 
-    await control.click();
+    await control.click({ timeout: 2000 }).catch(() => {});
     await page.waitForTimeout(250);
 
     const menu = await page.$(".select__menu, [role='listbox']");
     if (menu) {
-      const options = await page.$$(".select__option, [role='option']");
       for (const pref of preferredValues) {
-        for (const opt of options) {
-          const text = (await opt.innerText()).trim();
-          if (text.toLowerCase().includes(pref.toLowerCase())) {
-            await opt.click();
-            await page.waitForTimeout(200);
-            return true;
+        if (!pref) continue;
+        const opt = await page.$(`.select__option:has-text("${pref}"), [role='option']:has-text("${pref}")`);
+        if (opt && (await opt.isVisible())) {
+          await opt.click({ timeout: 2000 }).catch(() => {});
+          await page.waitForTimeout(200);
+          return true;
+        }
+      }
+      // Single-eval fallback across all options in browser
+      const foundIndex = await page.$$eval(
+        ".select__option, [role='option']",
+        (opts, prefs) => {
+          for (let i = 0; i < opts.length; i++) {
+            const t = opts[i].textContent.toLowerCase();
+            if (prefs.some((p) => p && t.includes(String(p).toLowerCase()))) return i;
           }
+          return -1;
+        },
+        preferredValues
+      );
+
+      if (foundIndex >= 0) {
+        const allOpts = await page.$$(".select__option, [role='option']");
+        if (allOpts[foundIndex]) {
+          await allOpts[foundIndex].click({ timeout: 2000 }).catch(() => {});
+          await page.waitForTimeout(200);
+          return true;
         }
       }
     }
@@ -221,21 +240,64 @@ async function answerGeneralQuestions(page, profile, platform) {
       // 13. Desired salary / Target compensation
       else if (/desired\s*salary|target\s*compensation|salary\s*expectation|compensation/i.test(l)) {
         const inputType = await input.getAttribute("type");
-        if (inputType === "number") {
-          const numVal = profile.desiredSalary && !isNaN(Number(profile.desiredSalary)) ? String(profile.desiredSalary) : "0";
-          await input.fill(numVal);
+        const numericOnly = /numeric|number|digits|without\s*special\s*char/i.test(l);
+        if (inputType === "number" || numericOnly) {
+          let numVal = "";
+          if (profile.desiredSalary !== undefined) {
+            numVal = String(profile.desiredSalary).replace(/\D+/g, "");
+          }
+          if (!numVal) {
+            const req = await isFieldRequired(page, input);
+            if (req) numVal = "0";
+          }
+          if (numVal) {
+            await input.fill(numVal);
+          }
         } else if (!isCombobox) {
           const salText = profile.desiredSalary !== undefined ? String(profile.desiredSalary) : "Negotiable";
           await input.fill(salText);
         }
       }
-      // 14. "If you selected other, please specify"
+      // 14. Links & Social Profiles in general loop (handles custom Greenhouse/Ashby link questions)
+      else if (/linkedin/i.test(l)) {
+        if (!isCombobox && profile.linkedinUrl) {
+          await input.fill(profile.linkedinUrl);
+        }
+      }
+      else if (/github/i.test(l)) {
+        if (!isCombobox && profile.githubUrl) {
+          const req = await isFieldRequired(page, input);
+          if (!profile.githubOnlyIfRequired || req) {
+            await input.fill(profile.githubUrl);
+          }
+        }
+      }
+      else if (/portfolio|personal\s*(website|site|url|page)|other\s*website|website.*portfolio/i.test(l)) {
+        if (!isCombobox) {
+          const urlVal = profile.portfolioUrl || (!profile.githubOnlyIfRequired ? profile.githubUrl : "") || profile.linkedinUrl;
+          if (urlVal) await input.fill(urlVal);
+        }
+      }
+      // 15. Consent / Interview recording / BrightHire / Policy / Terms
+      else if (/brighthire|interview.*record|consent.*record|record.*interview|record(ed)?|consent|agree.*terms|terms.*condition|privacy\s*policy/i.test(l)) {
+        if (isCombobox) {
+          await selectAnyOption(page, input, ["Yes", "Agree", "I agree", "Consent", "I consent", "true"]);
+        } else {
+          const type = await input.getAttribute("type");
+          if (type === "checkbox") {
+            await input.check().catch(() => input.click().catch(() => {}));
+          } else {
+            await input.fill("Yes");
+          }
+        }
+      }
+      // 16. "If you selected other, please specify"
       else if (/if\s*you\s*selected\s*.*other|please\s*specify/i.test(l)) {
         if (!isCombobox) {
           await input.fill("N/A");
         }
       }
-      // 15. Demographics in general loop
+      // 17. Demographics in general loop
       else if (/gender/i.test(l)) {
         await selectAnyOption(page, input, [profile.demographics?.gender || "Decline", "Decline to Self-Identify"]);
       } else if (/race|ethnicity|hispanic|latino/i.test(l)) {
@@ -283,6 +345,53 @@ async function fillGithubField(page, selectors, githubUrl, onlyIfRequired) {
       }
     } catch {}
   }
+  return false;
+}
+
+async function findAndFillLink(page, linkType, url, onlyIfRequired = false) {
+  if (!url) return false;
+  const selectors = [
+    `input[name*="${linkType}" i]`,
+    `input[id*="${linkType}" i]`,
+    `input[aria-label*="${linkType}" i]`,
+    `input[placeholder*="${linkType}" i]`,
+  ];
+  for (const sel of selectors) {
+    try {
+      const el = await page.$(sel);
+      if (el && (await el.isVisible())) {
+        if (onlyIfRequired) {
+          const req = await isFieldRequired(page, el);
+          if (!req) return false;
+        }
+        await el.fill(url);
+        return true;
+      }
+    } catch {}
+  }
+
+  try {
+    const label = await page.$(`label:has-text("${linkType}")`);
+    if (label && (await label.isVisible())) {
+      const forId = await label.getAttribute("for");
+      let input = forId ? await page.$("#" + forId) : null;
+      if (!input) {
+        const container = await label.evaluateHandle((el) =>
+          el.closest(".field, [class*='field'], .form-group, div")
+        );
+        input = await container.$("input:not([type='hidden']):not([type='file'])");
+      }
+      if (input && (await input.isVisible())) {
+        if (onlyIfRequired) {
+          const req = await isFieldRequired(page, input);
+          if (!req) return false;
+        }
+        await input.fill(url);
+        return true;
+      }
+    }
+  } catch {}
+
   return false;
 }
 
@@ -384,7 +493,8 @@ async function runAutoApply({ url, platform, profile, dryRun, headless }) {
   const page = await context.newPage();
 
   try {
-    await page.goto(url, { waitUntil: "networkidle", timeout: 30000 });
+    await page.goto(url, { waitUntil: "domcontentloaded", timeout: 30000 });
+    await page.waitForTimeout(2000);
 
     // Ensure resume file exists if specified
     const resumeExists = profile.resumePath && fs.existsSync(profile.resumePath);
@@ -455,21 +565,10 @@ async function runAutoApply({ url, platform, profile, dryRun, headless }) {
       }
 
       // 5. Links: LinkedIn, GitHub, Website
-      await fillField(page, [
-        'input[name*="linkedin" i]',
-        'input[id*="linkedin" i]',
-      ], profile.linkedinUrl);
-
-      await fillGithubField(page, [
-        'input[name*="github" i]',
-        'input[id*="github" i]',
-      ], profile.githubUrl, profile.githubOnlyIfRequired);
-
-      await fillField(page, [
-        'input[name*="website" i]',
-        'input[id*="website" i]',
-        'input[name*="portfolio" i]',
-      ], profile.portfolioUrl);
+      await findAndFillLink(page, "linkedin", profile.linkedinUrl);
+      await findAndFillLink(page, "github", profile.githubUrl, profile.githubOnlyIfRequired);
+      await findAndFillLink(page, "website", profile.portfolioUrl) ||
+        await findAndFillLink(page, "portfolio", profile.portfolioUrl);
 
       // 6. School / Education
       if (profile.education?.school) {
@@ -661,9 +760,10 @@ async function runAutoApply({ url, platform, profile, dryRun, headless }) {
       }
 
       // 4. Links
-      await fillField(page, ['input[name*="linkedin" i]'], profile.linkedinUrl);
-      await fillGithubField(page, ['input[name*="github" i]'], profile.githubUrl, profile.githubOnlyIfRequired);
-      await fillField(page, ['input[name*="portfolio" i]', 'input[name*="website" i]'], profile.portfolioUrl);
+      await findAndFillLink(page, "linkedin", profile.linkedinUrl);
+      await findAndFillLink(page, "github", profile.githubUrl, profile.githubOnlyIfRequired);
+      await findAndFillLink(page, "portfolio", profile.portfolioUrl) ||
+        await findAndFillLink(page, "website", profile.portfolioUrl);
 
       // 5. School / Education in Ashby
       if (profile.education?.school) {
