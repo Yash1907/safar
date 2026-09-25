@@ -58,7 +58,7 @@ function parseArgs(argv: string[]): Args {
       args.dryRun = true;
     } else if (arg === "--headed" || arg === "--no-headless") {
       args.headed = true;
-    } else if (arg === "--days") {
+    } else if (arg === "--days" || arg === "--lookback" || arg === "--lookback-days" || arg === "-d") {
       args.days = Number(argv[++i]);
     } else if (arg === "--limit") {
       args.limit = Number(argv[++i]);
@@ -257,17 +257,18 @@ async function runEodReportCli(db: ReturnType<typeof openDb>): Promise<boolean> 
 
 async function runSchedulerCli(
   db: ReturnType<typeof openDb>,
-  options: { filter?: string; usOnly?: boolean } = {},
+  options: { filter?: string; usOnly?: boolean; lookbackDays?: number } = {},
 ): Promise<boolean> {
   console.log("safar: background scheduler started. Monitoring applications and daily Discord reports...");
   const config = loadConfig();
   const summaryTime = config.discord?.eodSummaryTime || "18:00";
   const [targetHour, targetMinute] = summaryTime.split(":").map(Number);
+  const lookbackDays = options.lookbackDays ?? config.autoApply?.lookbackDays ?? 3;
 
   let lastReportedDay = "";
 
   // Run initial auto-apply
-  await runAutoApplyCli(db, { lookbackDays: 3, dryRun: false, filter: options.filter, usOnly: options.usOnly });
+  await runAutoApplyCli(db, { lookbackDays, dryRun: false, filter: options.filter, usOnly: options.usOnly });
 
   // Hourly check loop
   const interval = setInterval(async () => {
@@ -289,7 +290,7 @@ async function runSchedulerCli(
     try {
       console.log("safar [scheduler]: syncing sources...");
       await syncAll(db, defaultSources());
-      await runAutoApplyCli(db, { lookbackDays: 3, dryRun: false, filter: options.filter, usOnly: options.usOnly });
+      await runAutoApplyCli(db, { lookbackDays, dryRun: false, filter: options.filter, usOnly: options.usOnly });
     } catch (err) {
       console.error("safar [scheduler] error:", err);
     }
@@ -327,7 +328,7 @@ Options:
   --auto-apply     Auto-apply to default Greenhouse & Ashby jobs (past 3 days)
   --dry-run        Test form filling without submitting
   --headed         Run with visible browser window (watch form filling live)
-  --days <N>       Lookback days for auto-apply (default: 3)
+  --days <N>, -d   Lookback days for auto-apply (default: 3 or config)
   --limit <N>      Maximum jobs to auto-apply to
   --role <type>    Filter auto-apply by role: intern, ft, or all (default: all)
   --filter <query> Filter auto-apply jobs by search query (e.g. 'title:forward,software,technology')
@@ -365,9 +366,11 @@ Options:
     }
 
     if (args.autoApply) {
+      const config = loadConfig();
+      const lookbackDays = args.days ?? config.autoApply?.lookbackDays ?? 3;
       hadError =
         (await runAutoApplyCli(db, {
-          lookbackDays: args.days ?? 3,
+          lookbackDays,
           dryRun: args.dryRun,
           headed: args.headed,
           limit: args.limit,
@@ -382,7 +385,7 @@ Options:
     }
 
     if (args.scheduler) {
-      hadError = (await runSchedulerCli(db, { filter: args.filter, usOnly: args.usOnly })) || hadError;
+      hadError = (await runSchedulerCli(db, { filter: args.filter, usOnly: args.usOnly, lookbackDays: args.days })) || hadError;
     }
 
     if (args.sheetsPull) {
