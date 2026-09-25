@@ -13,6 +13,7 @@ import { detectJobSite } from "../site.ts";
 import { loadConfig, resolveProfileForRole, type ProfileConfig } from "../config.ts";
 import { sendApplicationAlert } from "../discord.ts";
 import { detectRoleType, formatRoleType, roleBadge, type RoleType } from "../role.ts";
+import { parseFilterQuery, applyFilter } from "../filter.ts";
 
 export interface AutoApplyOptions {
   lookbackDays?: number; // default: 3
@@ -20,6 +21,7 @@ export interface AutoApplyOptions {
   headless?: boolean; // default: true (pass false or --headed to watch browser)
   limit?: number; // max applications in this run (optional)
   role?: RoleType | "all"; // filter by role type (intern vs fulltime)
+  filter?: string; // search query syntax to filter target jobs (e.g. "title:forward,software,technology")
   onProgress?: (message: string) => void;
 }
 
@@ -101,13 +103,32 @@ export function invokePlaywrightRunnerAsync(payload: {
 export async function autoApplySingleJob(
   db: Database,
   job: JobRecord,
-  options: { dryRun?: boolean; headless?: boolean } = {},
+  options: {
+    dryRun?: boolean;
+    headless?: boolean;
+    filter?: string;
+    checkFilter?: boolean;
+  } = {},
 ): Promise<AutoApplySingleResult> {
   const config = loadConfig();
   const dryRun = options.dryRun ?? config.autoApply?.dryRun ?? false;
   const headless = options.headless ?? config.autoApply?.headless ?? true;
   const now = Math.floor(Date.now() / 1000);
   const roleType = detectRoleType(job);
+
+  // Check filter if explicitly provided or checkFilter is requested
+  const filterQuery = options.filter ?? (options.checkFilter ? config.autoApply?.filter : undefined);
+  if (filterQuery && filterQuery.trim()) {
+    const parsed = parseFilterQuery(filterQuery.trim());
+    const matches = applyFilter([job], parsed, () => false).length > 0;
+    if (!matches) {
+      return {
+        success: false,
+        roleType,
+        reason: `Job does not match filter "${filterQuery.trim()}"`,
+      };
+    }
+  }
 
   // 1. Check if already applied or reposted
   const dedup = isJobAlreadyApplied(db, job);
@@ -249,13 +270,28 @@ export async function runAutoApplyBatch(
   const lookbackDays = options.lookbackDays ?? config.autoApply?.lookbackDays ?? 3;
   const dryRun = options.dryRun ?? config.autoApply?.dryRun ?? false;
   const headless = options.headless ?? config.autoApply?.headless ?? true;
+
+  // Resolve filter: CLI options.filter takes precedence, then config.autoApply.filter
+  let effectiveFilter: string | undefined = undefined;
+  if (options.filter !== undefined) {
+    const f = options.filter.trim();
+    if (f.toLowerCase() === "all" || f.toLowerCase() === "none" || f === "") {
+      effectiveFilter = undefined;
+    } else {
+      effectiveFilter = f;
+    }
+  } else if (config.autoApply?.filter) {
+    effectiveFilter = config.autoApply.filter.trim();
+  }
+
   const now = Math.floor(Date.now() / 1000);
   const cutoff = now - lookbackDays * 86400;
 
-  options.onProgress?.(`Scanning active jobs from the past ${lookbackDays} days...`);
+  const filterDesc = effectiveFilter ? ` matching filter "${effectiveFilter}"` : "";
+  options.onProgress?.(`Scanning active jobs from the past ${lookbackDays} days${filterDesc}...`);
 
   // Query jobs within past lookbackDays (using date_posted or first_seen_at)
-  const candidateJobs = db
+  const rawJobs = db
     .query(
       `SELECT j.*, a.status as status, a.notes as notes, a.updated_at as updated_at
        FROM jobs j
@@ -266,6 +302,34 @@ export async function runAutoApplyBatch(
     )
     .all(cutoff, cutoff) as any[];
 
+  let candidateJobs: JobRecord[] = rawJobs.map((raw) => ({
+    id: raw.id,
+    sourceId: raw.source_id,
+    sourceJobId: raw.source_job_id,
+    company: raw.company,
+    title: raw.title,
+    url: raw.url,
+    locations: JSON.parse(raw.locations || "[]"),
+    workModel: raw.work_model,
+    datePosted: raw.date_posted,
+    active: !!raw.active,
+    extra: JSON.parse(raw.extra || "{}"),
+    firstSeenAt: raw.first_seen_at,
+    lastSeenAt: raw.last_seen_at,
+    status: raw.status ?? null,
+    notes: raw.notes ?? null,
+    updatedAt: raw.updated_at ?? null,
+  }));
+
+  if (effectiveFilter) {
+    const parsed = parseFilterQuery(effectiveFilter);
+    const beforeCount = candidateJobs.length;
+    candidateJobs = applyFilter(candidateJobs, parsed, () => false);
+    options.onProgress?.(
+      `Filtered candidate jobs with "${effectiveFilter}": ${candidateJobs.length} match out of ${beforeCount}`,
+    );
+  }
+
   const summary: AutoApplyBatchResult = {
     totalScanned: candidateJobs.length,
     appliedCount: 0,
@@ -274,25 +338,7 @@ export async function runAutoApplyBatch(
     results: [],
   };
 
-  for (const raw of candidateJobs) {
-    const job: JobRecord = {
-      id: raw.id,
-      sourceId: raw.source_id,
-      sourceJobId: raw.source_job_id,
-      company: raw.company,
-      title: raw.title,
-      url: raw.url,
-      locations: JSON.parse(raw.locations || "[]"),
-      workModel: raw.work_model,
-      datePosted: raw.date_posted,
-      active: !!raw.active,
-      extra: JSON.parse(raw.extra || "{}"),
-      firstSeenAt: raw.first_seen_at,
-      lastSeenAt: raw.last_seen_at,
-      status: raw.status ?? null,
-      notes: raw.notes ?? null,
-      updatedAt: raw.updated_at ?? null,
-    };
+  for (const job of candidateJobs) {
 
     // 0. Detect role type and check role filter if specified
     const roleType = detectRoleType(job);

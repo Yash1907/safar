@@ -156,3 +156,44 @@ describe("resolveConfigPath", () => {
   });
 });
 
+describe("autoApply config parsing", () => {
+  test("parses autoApply.filter string and trims whitespace", () => {
+    const path = tmpConfigPath(
+      JSON.stringify({
+        autoApply: {
+          enabled: true,
+          lookbackDays: 5,
+          filter: "  title:forward,software,technology  ",
+        },
+      }),
+    );
+    const config = loadConfig(path);
+    expect(config.autoApply.filter).toBe("title:forward,software,technology");
+    expect(config.autoApply.lookbackDays).toBe(5);
+  });
+
+  test("parses filterQuery alias when filter is omitted", () => {
+    const path = tmpConfigPath(
+      JSON.stringify({
+        autoApply: {
+          filterQuery: "loc:remote wm:remote",
+        },
+      }),
+    );
+    const config = loadConfig(path);
+    expect(config.autoApply.filter).toBe("loc:remote wm:remote");
+  });
+
+  test("leaves filter undefined when not configured", () => {
+    const path = tmpConfigPath(
+      JSON.stringify({
+        autoApply: {
+          enabled: true,
+        },
+      }),
+    );
+    const config = loadConfig(path);
+    expect(config.autoApply.filter).toBeUndefined();
+  });
+});
+

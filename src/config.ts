@@ -109,6 +109,7 @@ export interface AutoApplyConfig {
   lookbackDays?: number; // default 3
   dryRun?: boolean; // default false
   headless?: boolean; // default true (false runs headed browser so you can watch)
+  filter?: string; // search query syntax to filter target jobs (e.g. "title:forward,software,technology")
 }
 
 export interface SafarConfig {
@@ -505,11 +506,21 @@ function parseAutoApplyConfig(raw: unknown): AutoApplyConfig {
     return { enabled: true, lookbackDays: 3, dryRun: false, headless: true };
   }
   const r = raw as Record<string, unknown>;
+  const rawFilter =
+    typeof r.filter === "string"
+      ? r.filter
+      : typeof r.filterQuery === "string"
+        ? r.filterQuery
+        : typeof r.query === "string"
+          ? r.query
+          : undefined;
+
   return {
     enabled: r.enabled !== false,
     lookbackDays: typeof r.lookbackDays === "number" ? r.lookbackDays : 3,
     dryRun: r.dryRun === true,
     headless: r.headless !== false,
+    filter: rawFilter ? rawFilter.trim() : undefined,
   };
 }
 

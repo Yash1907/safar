@@ -161,7 +161,9 @@ Create or edit your configuration at `~/.config/safar/config.json` (or `%APPDATA
   "autoApply": {
     "enabled": true,
     "lookbackDays": 3,
-    "dryRun": false
+    "dryRun": false,
+    "headless": true,
+    "filter": "title:forward,software,technology"
   }
 }
 ```
@@ -200,6 +202,12 @@ bun run src/index.tsx --auto-apply --role intern
 # Apply only to full-time roles using your full-time profile
 bun run src/index.tsx --auto-apply --role ft
 
+# Filter what you apply to using search query syntax (e.g. title keywords, locations, companies)
+bun run src/index.tsx --auto-apply --filter "title:forward,software,technology"
+
+# Complex search filters (e.g. software/data roles, remote only, excluding senior)
+bun run src/index.tsx --auto-apply --filter "(title:software OR title:data) loc:remote -title:senior"
+
 # Custom lookback window (e.g. past 5 days) and application limit
 bun run src/index.tsx --auto-apply --days 5 --limit 10
 ```
@@ -211,9 +219,10 @@ bun run src/index.tsx --eod-report
 ```
 
 ### Automated Background Scheduler
-Run a background daemon that periodically syncs sources, auto-applies to new listings, and sends the EOD summary to Discord at your configured `eodSummaryTime` (default: 18:00):
+Run a background daemon that periodically syncs sources, auto-applies to new listings (respecting any configured filter), and sends the EOD summary to Discord at your configured `eodSummaryTime` (default: 18:00):
 ```bash
 bun run src/index.tsx --scheduler
+bun run src/index.tsx --scheduler --filter "title:forward,software,technology"
 ```
 
 ### Command Line Options Reference
@@ -229,6 +238,7 @@ Options:
   --days <N>       Lookback days for auto-apply (default: 3)
   --limit <N>      Maximum jobs to auto-apply to
   --role <type>    Filter auto-apply by role: intern, ft, or all (default: all)
+  --filter <query> Filter auto-apply jobs by search query (e.g. 'title:forward,software,technology')
   --eod-report     Send end-of-day summary report to Discord webhook
   --scheduler      Run automated background scheduler for auto-apply & daily check
   --export <path>  Export all jobs to .csv or .json

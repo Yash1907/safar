@@ -95,4 +95,118 @@ describe("autoApplySingleJob", () => {
     const resFt = await autoApplySingleJob(db, ftJob);
     expect(resFt.roleType).toBe("fulltime");
   });
+
+  it("fails early in autoApplySingleJob if job does not match explicit filter", async () => {
+    const job: JobRecord = {
+      id: 2,
+      sourceId: "s2",
+      company: "Beta Inc",
+      title: "Senior Product Manager",
+      url: "https://boards.greenhouse.io/beta/2",
+      locations: [],
+      active: true,
+      firstSeenAt: 2000,
+      lastSeenAt: 2000,
+      status: null,
+    };
+
+    const res = await autoApplySingleJob(db, job, {
+      filter: "title:forward,software,technology",
+    });
+    expect(res.success).toBe(false);
+    expect(res.reason).toContain('does not match filter "title:forward,software,technology"');
+  });
+
+  it("passes filter check in autoApplySingleJob if job matches filter", async () => {
+    const job: JobRecord = {
+      id: 2,
+      sourceId: "s2",
+      company: "Beta Inc",
+      title: "Forward Deployed Engineer",
+      url: "https://jobs.lever.co/beta/2", // Unsupported platform so it reaches platform check after filter
+      locations: [],
+      active: true,
+      firstSeenAt: 2000,
+      lastSeenAt: 2000,
+      status: null,
+    };
+
+    const res = await autoApplySingleJob(db, job, {
+      filter: "title:forward,software,technology",
+    });
+    // Filter passed, so it proceeded to next check (unsupported platform)
+    expect(res.success).toBe(false);
+    expect(res.reason).toContain("Unsupported platform");
+  });
 });
+
+describe("runAutoApplyBatch with search query filter", () => {
+  let db: Database;
+  const now = Math.floor(Date.now() / 1000);
+
+  beforeEach(() => {
+    db = new Database(":memory:");
+    migrate(db);
+    db.exec(`
+      INSERT INTO jobs (id, source_id, source_job_id, company, title, url, first_seen_at, last_seen_at, date_posted, active)
+      VALUES (10, 's1', '10', 'Palantir', 'Forward Deployed Engineer', 'https://jobs.lever.co/palantir/10', ${now}, ${now}, ${now}, 1),
+             (20, 's1', '20', 'Google', 'Software Engineer', 'https://jobs.lever.co/google/20', ${now}, ${now}, ${now}, 1),
+             (30, 's1', '30', 'TechCorp', 'Technology Analyst', 'https://jobs.lever.co/tech/30', ${now}, ${now}, ${now}, 1),
+             (40, 's1', '40', 'Meta', 'Senior Software Engineer', 'https://jobs.lever.co/meta/40', ${now}, ${now}, ${now}, 1),
+             (50, 's1', '50', 'SalesCo', 'Human Resources Associate', 'https://jobs.lever.co/sales/50', ${now}, ${now}, ${now}, 1)
+    `);
+  });
+
+  afterEach(() => {
+    db.close();
+  });
+
+  it("filters candidate jobs by title:forward,software,technology", async () => {
+    const { runAutoApplyBatch } = await import("../src/applier/engine.ts");
+    const result = await runAutoApplyBatch(db, {
+      lookbackDays: 3,
+      dryRun: true,
+      filter: "title:forward,software,technology",
+    });
+
+    // Palantir (Forward), Google (Software), TechCorp (Technology), Meta (Software) match.
+    // SalesCo (HR Associate) does not match.
+    expect(result.totalScanned).toBe(4);
+    const scannedTitles = result.results.map((r) => r.title);
+    expect(scannedTitles).toContain("Forward Deployed Engineer");
+    expect(scannedTitles).toContain("Software Engineer");
+    expect(scannedTitles).toContain("Technology Analyst");
+    expect(scannedTitles).toContain("Senior Software Engineer");
+    expect(scannedTitles).not.toContain("Human Resources Associate");
+  });
+
+  it("supports boolean exclusions like title:forward,software,technology -title:senior", async () => {
+    const { runAutoApplyBatch } = await import("../src/applier/engine.ts");
+    const result = await runAutoApplyBatch(db, {
+      lookbackDays: 3,
+      dryRun: true,
+      filter: "title:forward,software,technology -title:senior",
+    });
+
+    // Senior Software Engineer excluded by -title:senior
+    expect(result.totalScanned).toBe(3);
+    const scannedTitles = result.results.map((r) => r.title);
+    expect(scannedTitles).toContain("Forward Deployed Engineer");
+    expect(scannedTitles).toContain("Software Engineer");
+    expect(scannedTitles).toContain("Technology Analyst");
+    expect(scannedTitles).not.toContain("Senior Software Engineer");
+  });
+
+  it("supports company and location filters", async () => {
+    const { runAutoApplyBatch } = await import("../src/applier/engine.ts");
+    const result = await runAutoApplyBatch(db, {
+      lookbackDays: 3,
+      dryRun: true,
+      filter: "company:palantir",
+    });
+
+    expect(result.totalScanned).toBe(1);
+    expect(result.results[0]!.company).toBe("Palantir");
+  });
+});
+
