@@ -15,6 +15,26 @@ import { sendApplicationAlert } from "../discord.ts";
 import { detectRoleType, formatRoleType, roleBadge, type RoleType } from "../role.ts";
 import { parseFilterQuery, applyFilter } from "../filter.ts";
 import { isUsJob } from "../location.ts";
+import {
+  appendApplicationLog,
+  type LoggedApplicationField,
+} from "./application-log.ts";
+
+export interface RunnerField extends LoggedApplicationField {
+  filled?: boolean;
+  valid?: boolean;
+  mustFill?: boolean;
+  type?: string;
+}
+
+interface RunnerResult {
+  success: boolean;
+  dryRun?: boolean;
+  error?: string;
+  message?: string;
+  confirmationUrl?: string;
+  fields?: RunnerField[];
+}
 
 export interface AutoApplyOptions {
   lookbackDays?: number; // default: 3
@@ -50,6 +70,8 @@ export interface AutoApplySingleResult {
   roleType?: RoleType;
   dryRun?: boolean;
   reason?: string;
+  warning?: string;
+  logPath?: string;
 }
 
 /**
@@ -59,9 +81,10 @@ export function invokePlaywrightRunnerAsync(payload: {
   url: string;
   platform: string;
   profile: ProfileConfig;
+  roleType?: RoleType;
   dryRun: boolean;
   headless?: boolean;
-}): Promise<{ success: boolean; dryRun?: boolean; error?: string; message?: string }> {
+}): Promise<RunnerResult> {
   return new Promise((resolve) => {
     const runnerPath = join(__dirname, "playwright-runner.cjs");
     const proc = spawn("node", [runnerPath], {
@@ -98,6 +121,42 @@ export function invokePlaywrightRunnerAsync(payload: {
     proc.stdin.write(JSON.stringify(payload));
     proc.stdin.end();
   });
+}
+
+/**
+ * Persist only after the runner has observed an ATS confirmation. setStatus is
+ * transactional, so the application row and status history move together and
+ * future runs immediately deduplicate this job.
+ */
+export function persistSuccessfulApplication(
+  db: Database,
+  job: Pick<JobRecord, "id" | "company" | "title" | "url">,
+  platform: string,
+  fields: RunnerField[],
+  appliedAt: number,
+  logPath?: string,
+): { logPath?: string; warning?: string } {
+  setStatus(db, job.id, "applied", appliedAt);
+  try {
+    const writtenLogPath = appendApplicationLog({
+      company: job.company,
+      title: job.title,
+      url: job.url,
+      platform,
+      appliedAt: new Date(appliedAt * 1000),
+      fields: fields.map((field) => ({
+        label: field.label,
+        value: field.value,
+        required: field.mustFill ?? field.required,
+        category: field.category,
+      })),
+    }, logPath);
+    return { logPath: writtenLogPath };
+  } catch (error) {
+    return {
+      warning: `Application was submitted and saved to the database, but log.txt could not be updated: ${error instanceof Error ? error.message : String(error)}`,
+    };
+  }
 }
 
 /**
@@ -173,20 +232,8 @@ export async function autoApplySingleJob(
     };
   }
 
-  // 3. Classify job questions
-  const classification = await classifyJob(job);
-  if (!classification.isDefaultJob) {
-    const reason = classification.reason || "Custom questions required";
-    recordSkippedJob(db, job.id, reason, now);
-    return {
-      success: false,
-      platform,
-      roleType,
-      reason,
-    };
-  }
-
-  // 4. Resolve profile for this role type
+  // 3. Resolve the role-specific profile before classification so preflight
+  // can prove that every required question has a configured answer.
   const resolvedProfile = resolveProfileForRole(config.profile, roleType);
   if (
     !resolvedProfile ||
@@ -204,18 +251,39 @@ export async function autoApplySingleJob(
     };
   }
 
+  // 4. Classify questions and confirm this profile can answer them.
+  const classification = await classifyJob(job, resolvedProfile, roleType);
+  if (!classification.isDefaultJob) {
+    const reason = classification.reason || "Custom questions required";
+    recordSkippedJob(db, job.id, reason, now);
+    return {
+      success: false,
+      platform,
+      roleType,
+      reason,
+    };
+  }
+
   // 5. Submit application via Playwright
   const applyRes = await invokePlaywrightRunnerAsync({
     url: job.url,
     platform,
     profile: resolvedProfile,
+    roleType,
     dryRun,
     headless,
   });
 
   if (applyRes.success) {
+    let persisted: { logPath?: string; warning?: string } = {};
     if (!dryRun) {
-      setStatus(db, job.id, "applied", now);
+      persisted = persistSuccessfulApplication(
+        db,
+        job,
+        platform,
+        applyRes.fields ?? [],
+        Math.floor(Date.now() / 1000),
+      );
       if (config.discord?.webhookUrl) {
         void sendApplicationAlert(config.discord.webhookUrl, {
           company: job.company,
@@ -232,6 +300,7 @@ export async function autoApplySingleJob(
       platform,
       roleType,
       dryRun,
+      ...persisted,
     };
   } else {
     const reason = `Auto-apply failed: ${applyRes.error || "Unknown error"}`;
@@ -253,7 +322,7 @@ function invokePlaywrightRunner(payload: {
   platform: string;
   profile: ProfileConfig;
   dryRun: boolean;
-}): { success: boolean; dryRun?: boolean; error?: string; message?: string } {
+}): RunnerResult {
   const runnerPath = join(__dirname, "playwright-runner.cjs");
 
   const proc = spawnSync("node", [runnerPath], {
@@ -414,12 +483,11 @@ export async function runAutoApplyBatch(
       continue;
     }
 
-    // 3. Classify job questions
-    options.onProgress?.(`Classifying ${job.company} — "${job.title}" [${roleBadge(roleType).toUpperCase()}] (${platform})...`);
-    const classification = await classifyJob(job);
-
-    if (!classification.isDefaultJob) {
-      const reason = classification.reason || "Custom questions required";
+    // 3. Resolve the role-specific profile first so classification can verify
+    // that every required question has a configured answer.
+    const resolvedProfile = resolveProfileForRole(config.profile, roleType);
+    if (!resolvedProfile || !resolvedProfile.firstName || !resolvedProfile.lastName || !resolvedProfile.email) {
+      const reason = `Profile details missing in ~/.config/safar/config.json for ${formatRoleType(roleType)}`;
       recordSkippedJob(db, job.id, reason, now);
       summary.skippedCount++;
       summary.results.push({
@@ -434,10 +502,12 @@ export async function runAutoApplyBatch(
       continue;
     }
 
-    // 4. Job is a default job! Check profile configuration for this role type
-    const resolvedProfile = resolveProfileForRole(config.profile, roleType);
-    if (!resolvedProfile || !resolvedProfile.firstName || !resolvedProfile.lastName || !resolvedProfile.email) {
-      const reason = `Profile details missing in ~/.config/safar/config.json for ${formatRoleType(roleType)}`;
+    // 4. Classify job questions and check profile answerability.
+    options.onProgress?.(`Classifying ${job.company} — "${job.title}" [${roleBadge(roleType).toUpperCase()}] (${platform})...`);
+    const classification = await classifyJob(job, resolvedProfile, roleType);
+
+    if (!classification.isDefaultJob) {
+      const reason = classification.reason || "Custom questions required";
       recordSkippedJob(db, job.id, reason, now);
       summary.skippedCount++;
       summary.results.push({
@@ -460,14 +530,23 @@ export async function runAutoApplyBatch(
       url: job.url,
       platform,
       profile: resolvedProfile,
+      roleType,
       dryRun,
       headless,
     });
 
     if (applyRes.success) {
       summary.appliedCount++;
+      let persistenceWarning: string | undefined;
       if (!dryRun) {
-        setStatus(db, job.id, "applied", now);
+        const persisted = persistSuccessfulApplication(
+          db,
+          job,
+          platform,
+          applyRes.fields ?? [],
+          Math.floor(Date.now() / 1000),
+        );
+        persistenceWarning = persisted.warning;
         // Send real-time Discord notification
         if (config.discord?.webhookUrl) {
           void sendApplicationAlert(config.discord.webhookUrl, {
@@ -488,7 +567,9 @@ export async function runAutoApplyBatch(
         url: job.url,
         roleType,
         status: "applied",
-        reason: dryRun ? "Dry-run succeeded" : "Application submitted",
+        reason: dryRun
+          ? "Dry-run succeeded (all required fields audited)"
+          : persistenceWarning || "Application submitted, recorded in the database, and appended to log.txt",
       });
     } else {
       const reason = `Auto-apply failed: ${applyRes.error || "Unknown error"}`;

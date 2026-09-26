@@ -1,12 +1,18 @@
 const { chromium } = require("playwright");
 const fs = require("node:fs");
+const {
+  FieldCategory,
+  classifyField,
+  resolveFieldValue,
+  getDegreeOptionCandidates,
+} = require("./field-classifier.cjs");
 
 async function fillField(page, selectors, value) {
   if (!value) return false;
   for (const sel of selectors) {
     try {
       const el = await page.$(sel);
-      if (el && await el.isVisible()) {
+      if (el && (await el.isVisible())) {
         await el.fill(value);
         return true;
       }
@@ -15,16 +21,129 @@ async function fillField(page, selectors, value) {
   return false;
 }
 
+function normalizeChoice(value) {
+  return String(value || "")
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, " ")
+    .trim();
+}
+
+function bestOptionIndex(optionTexts, preferredValues) {
+  const texts = optionTexts.map(normalizeChoice);
+  const preferences = preferredValues.map(normalizeChoice).filter(Boolean);
+
+  for (const preferred of preferences) {
+    const exact = texts.findIndex((text) => text === preferred);
+    if (exact >= 0) return exact;
+    if (preferred === "yes" || preferred === "no") {
+      const booleanMatch = texts.findIndex((text) => text.startsWith(`${preferred} `));
+      if (booleanMatch >= 0) return booleanMatch;
+    }
+  }
+
+  let bestIndex = -1;
+  let bestScore = 0;
+  for (const preferred of preferences) {
+    if (preferred.length < 3) continue;
+    const wantedTokens = new Set(preferred.split(" ").filter((token) => token.length > 2));
+    for (let index = 0; index < texts.length; index++) {
+      const text = texts[index];
+      if (!text || /^(no options?|no results?)\b/.test(text)) continue;
+      if (text.includes(preferred) || preferred.includes(text)) return index;
+      const candidateTokens = new Set(text.split(" ").filter((token) => token.length > 2));
+      const overlap = [...wantedTokens].filter((token) => candidateTokens.has(token)).length;
+      const coverage = wantedTokens.size ? overlap / wantedTokens.size : 0;
+      const precision = candidateTokens.size ? overlap / candidateTokens.size : 0;
+      const score = coverage * 0.8 + precision * 0.2;
+      if (score > bestScore) {
+        bestScore = score;
+        bestIndex = index;
+      }
+    }
+  }
+  return bestScore >= 0.55 ? bestIndex : -1;
+}
+
+async function visibleOptionsForInput(page, input) {
+  const controlsId = await input.getAttribute("aria-controls").catch(() => null);
+  const menus = [];
+  if (controlsId) {
+    const escapedId = controlsId.replace(/\\/g, "\\\\").replace(/"/g, '\\"');
+    const controlled = await page.$(`[id="${escapedId}"]`).catch(() => null);
+    if (controlled) menus.push(controlled);
+  }
+  for (const candidate of await page.$$(
+    ".select__menu, [role='listbox'], ul.ui-autocomplete, [class*='autocomplete-list'], .pac-container",
+  )) {
+    if (!menus.includes(candidate)) menus.push(candidate);
+  }
+  for (let index = menus.length - 1; index >= 0; index--) {
+    const menu = menus[index];
+    if (!(await menu.isVisible().catch(() => false))) continue;
+    const options = await menu.$$(
+      ".select__option, [role='option'], li.ui-menu-item, .pac-item, li",
+    );
+    if (options.length) return options;
+  }
+  return [];
+}
+
+async function selectSearchableOption(page, input, queryValues, preferredValues = queryValues) {
+  const queries = [...new Set(queryValues.filter(Boolean).map(String))];
+  for (const query of queries) {
+    await input.click({ timeout: 2000 }).catch(() => {});
+    await input.fill(query).catch(() => {});
+    await page.waitForTimeout(350);
+    const options = await visibleOptionsForInput(page, input);
+    const optionTexts = await Promise.all(
+      options.map(async (option) => ((await option.innerText().catch(() => "")) || "").trim()),
+    );
+    const foundIndex = bestOptionIndex(optionTexts, preferredValues);
+    if (foundIndex >= 0 && options[foundIndex]) {
+      await options[foundIndex].click({ timeout: 2000 }).catch(() => {});
+      await page.waitForTimeout(200);
+      return true;
+    }
+    await page.keyboard.press("Escape").catch(() => {});
+  }
+  await input.fill("").catch(() => {});
+  return false;
+}
+
+async function isCustomCombobox(input) {
+  return input.evaluate((el) =>
+    el.getAttribute("role") === "combobox" ||
+    el.getAttribute("aria-autocomplete") === "list" ||
+    Boolean(el.getAttribute("aria-controls")) ||
+    Boolean(el.closest(".select__control")),
+  );
+}
+
 async function selectAnyOption(page, targetElOrSelector, preferredValues) {
   try {
     const el = typeof targetElOrSelector === "string" ? await page.$(targetElOrSelector) : targetElOrSelector;
     if (!el || !(await el.isVisible())) return false;
 
-    const isStandardSelect = await el.evaluate(e => e.tagName === "SELECT");
+    const isStandardSelect = await el.evaluate((e) => e.tagName === "SELECT");
     if (isStandardSelect) {
-      const options = await el.$$eval("option", opts => opts.map(o => ({ value: o.value, text: o.text.trim() })));
+      const options = await el.$$eval("option", (opts) =>
+        opts.map((o) => ({ value: o.value, text: o.text.trim() }))
+      );
+      const normalize = (value) => String(value || "").toLowerCase().replace(/[^a-z0-9]+/g, " ").trim();
       for (const pref of preferredValues) {
-        const match = options.find(o => o.text.toLowerCase().includes(pref.toLowerCase()) || o.value.toLowerCase().includes(pref.toLowerCase()));
+        if (!pref) continue;
+        const pLower = normalize(pref);
+        let match = options.find((o) => normalize(o.text) === pLower || normalize(o.value) === pLower);
+        if (!match && (pLower === "yes" || pLower === "no")) {
+          match = options.find((o) => normalize(o.text).startsWith(`${pLower} `));
+        }
+        if (!match && pLower.length > 2) {
+          match = options.find((o) => {
+            const text = normalize(o.text);
+            const value = normalize(o.value);
+            return text.includes(pLower) || pLower.includes(text) || value.includes(pLower);
+          });
+        }
         if (match) {
           await el.selectOption(match.value);
           return true;
@@ -33,45 +152,40 @@ async function selectAnyOption(page, targetElOrSelector, preferredValues) {
       return false;
     }
 
-    // Combobox or react-select
-    const control = await el.evaluateHandle(e => {
+    // Searchable combobox or react-select. Query each candidate because many
+    // Greenhouse controls do not load options until text has been entered.
+    const isInput = await el.evaluate((e) => e.tagName === "INPUT");
+    if (isInput) {
+      return await selectSearchableOption(page, el, preferredValues, preferredValues);
+    }
+
+    // Non-searchable custom select.
+    const control = await el.evaluateHandle((e) => {
       return e.closest(".select__control") || e.closest("[class*='select']") || e;
     });
 
     await control.click({ timeout: 2000 }).catch(() => {});
     await page.waitForTimeout(250);
 
-    const menu = await page.$(".select__menu, [role='listbox']");
-    if (menu) {
-      for (const pref of preferredValues) {
-        if (!pref) continue;
-        const opt = await page.$(`.select__option:has-text("${pref}"), [role='option']:has-text("${pref}")`);
-        if (opt && (await opt.isVisible())) {
-          await opt.click({ timeout: 2000 }).catch(() => {});
-          await page.waitForTimeout(200);
-          return true;
-        }
+    const menus = await page.$$(".select__menu, [role='listbox']");
+    let menu = null;
+    for (const candidate of menus) {
+      if (await candidate.isVisible().catch(() => false)) {
+        menu = candidate;
+        break;
       }
-      // Single-eval fallback across all options in browser
-      const foundIndex = await page.$$eval(
-        ".select__option, [role='option']",
-        (opts, prefs) => {
-          for (let i = 0; i < opts.length; i++) {
-            const t = opts[i].textContent.toLowerCase();
-            if (prefs.some((p) => p && t.includes(String(p).toLowerCase()))) return i;
-          }
-          return -1;
-        },
-        preferredValues
+    }
+    if (menu) {
+      const options = await menu.$$(".select__option, [role='option']");
+      const optionTexts = await Promise.all(
+        options.map(async (option) => ((await option.innerText().catch(() => "")) || "").trim()),
       );
+      const foundIndex = bestOptionIndex(optionTexts, preferredValues);
 
-      if (foundIndex >= 0) {
-        const allOpts = await page.$$(".select__option, [role='option']");
-        if (allOpts[foundIndex]) {
-          await allOpts[foundIndex].click({ timeout: 2000 }).catch(() => {});
-          await page.waitForTimeout(200);
-          return true;
-        }
+      if (foundIndex >= 0 && options[foundIndex]) {
+        await options[foundIndex].click({ timeout: 2000 }).catch(() => {});
+        await page.waitForTimeout(200);
+        return true;
       }
     }
     // Close menu if no match found
@@ -84,7 +198,7 @@ async function selectOption(page, selectSelectors, preferredValues) {
   for (const sel of selectSelectors) {
     try {
       const el = await page.$(sel);
-      if (el && await el.isVisible()) {
+      if (el && (await el.isVisible())) {
         const ok = await selectAnyOption(page, el, preferredValues);
         if (ok) return true;
       }
@@ -93,10 +207,110 @@ async function selectOption(page, selectSelectors, preferredValues) {
   return false;
 }
 
-async function answerGeneralQuestions(page, profile, platform) {
-  const containerSelector = platform === "ashby"
-    ? "[class*='fieldEntry'], .field, .form-group, div:has(> label)"
-    : ".field, [class*='field'], .form-group, div:has(> label)";
+async function fillSchoolAutocomplete(page, input, schoolName) {
+  if (!schoolName) return false;
+  try {
+    const requiresSelection = await isCustomCombobox(input);
+    const normalized = normalizeChoice(schoolName);
+    const firstDistinctiveWord = normalized
+      .split(" ")
+      .find((word) => word.length > 3 && !["university", "college", "state"].includes(word));
+    const selected = await selectSearchableOption(
+      page,
+      input,
+      [schoolName, firstDistinctiveWord],
+      [schoolName],
+    );
+    if (selected || requiresSelection) return selected;
+    await input.fill(schoolName);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+const US_STATE_NAMES = {
+  AL: "Alabama", AK: "Alaska", AZ: "Arizona", AR: "Arkansas", CA: "California",
+  CO: "Colorado", CT: "Connecticut", DE: "Delaware", FL: "Florida", GA: "Georgia",
+  HI: "Hawaii", ID: "Idaho", IL: "Illinois", IN: "Indiana", IA: "Iowa", KS: "Kansas",
+  KY: "Kentucky", LA: "Louisiana", ME: "Maine", MD: "Maryland", MA: "Massachusetts",
+  MI: "Michigan", MN: "Minnesota", MS: "Mississippi", MO: "Missouri", MT: "Montana",
+  NE: "Nebraska", NV: "Nevada", NH: "New Hampshire", NJ: "New Jersey", NM: "New Mexico",
+  NY: "New York", NC: "North Carolina", ND: "North Dakota", OH: "Ohio", OK: "Oklahoma",
+  OR: "Oregon", PA: "Pennsylvania", RI: "Rhode Island", SC: "South Carolina",
+  SD: "South Dakota", TN: "Tennessee", TX: "Texas", UT: "Utah", VT: "Vermont",
+  VA: "Virginia", WA: "Washington", WV: "West Virginia", WI: "Wisconsin", WY: "Wyoming",
+  DC: "District of Columbia",
+};
+
+async function fillLocationAutocomplete(page, selectors, address) {
+  const city = address?.city || "";
+  const state = address?.state || "";
+  if (!city && !state) return false;
+  const fullState = US_STATE_NAMES[String(state).trim().toUpperCase()] || state;
+  const preferred = [city, fullState, address?.country].filter(Boolean).join(", ");
+  const queries = [
+    [city, fullState].filter(Boolean).join(", "),
+    [city, state].filter(Boolean).join(", "),
+    city,
+  ].filter(Boolean);
+  for (const sel of selectors) {
+    try {
+      const el = await page.$(sel);
+      if (el && (await el.isVisible())) {
+        return await selectSearchableOption(page, el, queries, [preferred, queries[0]]);
+      }
+    } catch {}
+  }
+  return false;
+}
+
+async function selectBooleanRadioOrButton(container, preferredBoolean) {
+  const targetText = preferredBoolean ? "yes" : "no";
+  try {
+    // 1. Radio inputs inside container
+    const radios = await container.$$('input[type="radio"]');
+    for (const r of radios) {
+      const labelText = await r.evaluate((el) => {
+        const p = el.closest("label");
+        if (p) return p.textContent;
+        if (el.id) {
+          const l = document.querySelector(`label[for="${el.id}"]`);
+          if (l) return l.textContent;
+        }
+        return el.value;
+      });
+      const l = (labelText || "").toLowerCase();
+      if (
+        (targetText === "yes" && (l.includes("yes") || l === "1" || l === "true")) ||
+        (targetText === "no" && (l.includes("no") || l === "0" || l === "false"))
+      ) {
+        await r.click({ force: true }).catch(() => {});
+        return true;
+      }
+    }
+
+    // 2. Ashby buttons or pill radio buttons
+    const buttons = await container.$$('button:not([type="submit"]), [role="radio"]');
+    for (const b of buttons) {
+      const bText = (await b.innerText()).trim().toLowerCase();
+      if (
+        (targetText === "yes" && (bText === "yes" || bText.startsWith("yes"))) ||
+        (targetText === "no" && (bText === "no" || bText.startsWith("no")))
+      ) {
+        await b.click().catch(() => {});
+        return true;
+      }
+    }
+  } catch {}
+  return false;
+}
+
+async function answerGeneralQuestions(page, profile, platform, roleType) {
+  const containerSelector =
+    platform === "ashby"
+      ? "[class*='fieldEntry'], .field, .form-group, div:has(> label)"
+      : ".field, [class*='field'], .form-group, div:has(> label)";
 
   const fields = await page.$$(containerSelector);
   for (const f of fields) {
@@ -107,28 +321,174 @@ async function answerGeneralQuestions(page, profile, platform) {
         labelText = (await labelEl.innerText()).trim();
       }
       if (!labelText) {
-        labelText = await f.evaluate(el => el.getAttribute("aria-label") || el.innerText.split("\n")[0] || "");
+        labelText = await f.evaluate(
+          (el) => el.getAttribute("aria-label") || el.innerText.split("\n")[0] || ""
+        );
       }
       if (!labelText) continue;
       const l = labelText.toLowerCase().replace(/\s+/g, " ");
 
-      const input = await f.$("input:not([type='hidden']):not([type='file']):not([type='submit']), select, textarea");
-      if (!input || !(await input.isVisible())) continue;
+      // Run semantic classifier
+      const classification = classifyField(labelText);
+      const category = classification.category;
+      const resolved = resolveFieldValue(category, profile, roleType, { label: labelText });
 
-      const isFilled = await input.evaluate(el => {
-        if (el.tagName === "SELECT") return el.selectedIndex > 0;
+      // If resolved has a boolean value, check if container has radio buttons or button pills first
+      if (resolved && resolved.booleanVal !== undefined) {
+        const handled = await selectBooleanRadioOrButton(f, resolved.booleanVal);
+        if (handled) continue;
+      }
+
+      const input = await f.$(
+        "input:not([type='hidden']):not([type='file']):not([type='submit']), select, textarea"
+      );
+      if (!input || !(await input.isVisible())) {
+        if (resolved && resolved.booleanVal !== undefined) {
+          await selectBooleanRadioOrButton(f, resolved.booleanVal);
+        }
+        continue;
+      }
+
+      // Check if already filled
+      const isFilled = await input.evaluate((el, cont) => {
+        if (el.type === "radio") {
+          const radios = cont ? cont.querySelectorAll('input[type="radio"]') : [];
+          if (radios.length > 0) return Array.from(radios).some((r) => r.checked);
+          return el.checked;
+        }
+        if (el.type === "checkbox") {
+          return el.checked;
+        }
+        if (el.tagName === "SELECT") return el.selectedIndex > 0 && el.value !== "";
+        const isCombobox = el.getAttribute("role") === "combobox" || !!el.closest(".select__control");
+        if (isCombobox) {
+          const control = el.closest(".select__control") || cont;
+          const selected = control?.querySelector(
+            "[aria-selected='true'], [class*='singleValue'], [class*='selectedValue'], [data-value]",
+          );
+          return Boolean(selected && (selected.textContent || selected.getAttribute("data-value"))?.trim());
+        }
         if (el.value && el.value.trim().length > 0) return true;
-        const control = el.closest(".select__control");
-        if (control && !control.textContent.includes("Select...")) return true;
         return false;
-      });
+      }, f);
       if (isFilled) continue;
 
-      const isCombobox = await input.evaluate(el =>
-        el.getAttribute("role") === "combobox" || el.tagName === "SELECT" || !!el.closest(".select__control")
+      const inputType = await input.getAttribute("type");
+      const isCombobox = await input.evaluate(
+        (el) =>
+          el.getAttribute("role") === "combobox" ||
+          el.tagName === "SELECT" ||
+          !!el.closest(".select__control")
       );
 
-      // 1. Work authorization status (e.g. "Please provide your right to work status")
+      // 1. Semantic resolution
+      if (resolved && (category !== FieldCategory.UNKNOWN || resolved.custom)) {
+        if (inputType === "checkbox") {
+          if (resolved.booleanVal !== false) {
+            await input.check().catch(() => input.click().catch(() => {}));
+          }
+          continue;
+        }
+
+        if (category === FieldCategory.EDU_SCHOOL) {
+          if (isCombobox) {
+            const ok = await selectAnyOption(page, input, [resolved.text]);
+            if (!ok) await fillSchoolAutocomplete(page, input, resolved.text);
+          } else {
+            await fillSchoolAutocomplete(page, input, resolved.text);
+          }
+          continue;
+        }
+
+        if (category === FieldCategory.EDU_DEGREE) {
+          if (isCombobox) {
+            await selectAnyOption(page, input, resolved.optionCandidates);
+          } else {
+            await input.fill(resolved.text);
+          }
+          continue;
+        }
+
+        if (category === FieldCategory.EDU_MAJOR) {
+          if (isCombobox) {
+            await selectAnyOption(page, input, resolved.optionCandidates);
+          } else {
+            await input.fill(resolved.text);
+          }
+          continue;
+        }
+
+        if (category === FieldCategory.EDU_GPA) {
+          await input.fill(resolved.text);
+          continue;
+        }
+
+        if (
+          category === FieldCategory.EDU_GRAD_DATE ||
+          category === FieldCategory.EDU_START_YEAR ||
+          category === FieldCategory.EDU_START_MONTH ||
+          category === FieldCategory.EDU_GRAD_YEAR ||
+          category === FieldCategory.EDU_GRAD_MONTH
+        ) {
+          if (isCombobox) {
+            await selectAnyOption(page, input, resolved.optionCandidates);
+          } else if (inputType === "date") {
+            await input.fill(formatDateForPicker(resolved.text));
+          } else {
+            await input.fill(resolved.text);
+          }
+          continue;
+        }
+
+        if (category === FieldCategory.SIGNATURE || category === FieldCategory.CONTACT_FULL_NAME) {
+          await input.fill(resolved.text);
+          continue;
+        }
+
+        if (category === FieldCategory.DATE_TODAY) {
+          if (inputType === "date") {
+            await input.fill(resolved.text);
+          } else {
+            await input.fill(resolved.formattedDate || resolved.text);
+          }
+          continue;
+        }
+
+        if (category === FieldCategory.COMPENSATION_SALARY) {
+          const numericOnly = /numeric|number|digits|without\s*special\s*char/i.test(l);
+          if (inputType === "number" || numericOnly) {
+            let numVal = resolved.numericText || "";
+            if (!numVal) {
+              const req = await isFieldRequired(page, input);
+              if (req) numVal = "0";
+            }
+            if (numVal) await input.fill(numVal);
+          } else if (!isCombobox) {
+            await input.fill(resolved.text);
+          }
+          continue;
+        }
+
+        if (resolved.optionCandidates && resolved.optionCandidates.length > 0) {
+          if (isCombobox) {
+            await selectAnyOption(page, input, resolved.optionCandidates);
+          } else {
+            await input.fill(resolved.optionCandidates[0]);
+          }
+          continue;
+        }
+
+        if (resolved.text) {
+          if (isCombobox) {
+            await selectAnyOption(page, input, [resolved.text]);
+          } else {
+            await input.fill(resolved.text);
+          }
+          continue;
+        }
+      }
+
+      // 2. Pattern-based fallback handlers
       if (/status|type|explain|specify|current\s*immigration/i.test(l) && (/right\s*to\s*work|work\s*auth|immigration|eligib/i.test(l))) {
         const statusText = profile.workAuthorization?.statusText ||
           (profile.workAuthorization?.requiresSponsorship
@@ -140,7 +500,6 @@ async function answerGeneralQuestions(page, profile, platform) {
           await input.fill(statusText);
         }
       }
-      // 2. Right to work / Work authorization (Yes/No)
       else if (/right\s*to\s*work|authorized\s*to\s*work|eligible\s*to\s*work|legal\s*right|work\s*authori[sz]ation|lawfully\s*authorized/i.test(l)) {
         const preferred = profile.workAuthorization?.authorizedInUS === false ? ["No", "false"] : ["Yes", "true"];
         if (isCombobox) {
@@ -149,7 +508,6 @@ async function answerGeneralQuestions(page, profile, platform) {
           await input.fill(preferred[0]);
         }
       }
-      // 3. Visa sponsorship (Yes/No)
       else if (/sponsorship|visa\s*sponsorship/i.test(l)) {
         const preferred = profile.workAuthorization?.requiresSponsorship ? ["Yes", "true"] : ["No", "false"];
         if (isCombobox) {
@@ -158,23 +516,23 @@ async function answerGeneralQuestions(page, profile, platform) {
           await input.fill(preferred[0]);
         }
       }
-      // 4. Full legal name / Surname confirmation
-      else if (/full\s*legal\s*name|legal\s*name.*surname|middle\s*name/i.test(l)) {
+      else if (/full\s*legal\s*name|legal\s*name.*surname|middle\s*name|signature/i.test(l)) {
         if (isCombobox) {
           await selectAnyOption(page, input, ["Yes", "true"]);
         } else {
-          await input.fill("Yes");
+          await input.fill(`${profile.firstName} ${profile.lastName}`);
         }
       }
-      // 5. How did you hear / Connect / Source / Referral
-      else if (/hear\s*about|connect(ed)?\s*with\s*us|source|referral/i.test(l)) {
-        if (isCombobox) {
-          await selectAnyOption(page, input, ["LinkedIn", "Job Board", "Online", "Website", "Other"]);
-        } else {
-          await input.fill("LinkedIn");
+      else if (/hear\s*about|connect(ed)?\s*with\s*us|source|referral|learn\s*about/i.test(l)) {
+        const source = profile.answers?.referralSource;
+        if (source) {
+          if (isCombobox) {
+            await selectAnyOption(page, input, [source]);
+          } else {
+            await input.fill(source);
+          }
         }
       }
-      // 6. Willing to Relocate
       else if (/relocat/i.test(l)) {
         const preferred = profile.willingToRelocate === false ? ["No", "false"] : ["Yes", "true"];
         if (isCombobox) {
@@ -183,25 +541,29 @@ async function answerGeneralQuestions(page, profile, platform) {
           await input.fill(preferred[0]);
         }
       }
-      // 7. Commute / Onsite / Hybrid / Office presence / Days per week
       else if (/commute|onsite|in-?office|hybrid|days?\s*(a|per)\s*week|work\s*(out\s*of|from)\s*our\s*.*office/i.test(l)) {
-        if (isCombobox) {
-          await selectAnyOption(page, input, ["Yes", "true"]);
-        } else {
-          await input.fill("Yes");
+        const onsite = profile.answers?.willingOnsite;
+        if (onsite !== undefined) {
+          const preferred = onsite ? ["Yes", "true"] : ["No", "false"];
+          if (isCombobox) {
+            await selectAnyOption(page, input, preferred);
+          } else {
+            await input.fill(preferred[0]);
+          }
         }
       }
-      // 8. 18+ years of age / Legal age
       else if (/18\s*(years|or\s*older|\+)|at\s*least\s*18|legal\s*age/i.test(l)) {
-        if (isCombobox) {
-          await selectAnyOption(page, input, ["Yes", "true"]);
-        } else {
-          await input.fill("Yes");
+        const over18 = profile.answers?.over18;
+        if (over18 !== undefined) {
+          const preferred = over18 ? ["Yes", "true"] : ["No", "false"];
+          if (isCombobox) {
+            await selectAnyOption(page, input, preferred);
+          } else {
+            await input.fill(preferred[0]);
+          }
         }
       }
-      // 9. Earliest availability / Start date
-      else if (/start\s*date|earliest\s*(start|availab)|available\s*to\s*start|when.*(start|begin)/i.test(l)) {
-        const inputType = await input.getAttribute("type");
+      else if (/start\s*date|earliest\s*(start|availab\w*|avaiabl\w*)|available\s*to\s*start|when.*(start|begin)/i.test(l)) {
         const defaultDateText = profile.startDate || "Immediately";
         if (isCombobox) {
           const prefs = [profile.startDate, "Immediately", "Flexible", "Summer 2026", "Fall 2026"].filter(Boolean);
@@ -213,33 +575,39 @@ async function answerGeneralQuestions(page, profile, platform) {
           await input.fill(defaultDateText);
         }
       }
-      // 10. Notice period
       else if (/notice\s*period/i.test(l)) {
-        if (isCombobox) {
-          await selectAnyOption(page, input, ["None", "Immediate", "0"]);
-        } else {
-          await input.fill("None");
+        const notice = profile.answers?.noticePeriod;
+        if (notice) {
+          if (isCombobox) {
+            await selectAnyOption(page, input, [notice]);
+          } else {
+            await input.fill(notice);
+          }
         }
       }
-      // 11. Previously employed / Former employee / Applied before
-      else if (/previously\s*(worked|employed|applied)|former\s*employee|ever\s*worked\s*at/i.test(l)) {
-        if (isCombobox) {
-          await selectAnyOption(page, input, ["No", "false"]);
-        } else {
-          await input.fill("No");
+      else if (/previously\s*(worked|employed|applied)|former\s*employee|ever\s*worked\s*at|deloitte|pwc|ey|kpmg/i.test(l)) {
+        const previous = profile.answers?.previousEmployee;
+        if (previous !== undefined) {
+          const preferred = previous ? ["Yes", "true"] : ["No", "false"];
+          if (isCombobox) {
+            await selectAnyOption(page, input, preferred);
+          } else {
+            await input.fill(preferred[0]);
+          }
         }
       }
-      // 12. Non-compete
       else if (/non-?compete|restrictive\s*covenant/i.test(l)) {
-        if (isCombobox) {
-          await selectAnyOption(page, input, ["No", "None", "false"]);
-        } else {
-          await input.fill("None");
+        const nonCompete = profile.answers?.subjectToNonCompete;
+        if (nonCompete !== undefined) {
+          const preferred = nonCompete ? ["Yes", "true"] : ["No", "None", "false"];
+          if (isCombobox) {
+            await selectAnyOption(page, input, preferred);
+          } else {
+            await input.fill(preferred[0]);
+          }
         }
       }
-      // 13. Desired salary / Target compensation
       else if (/desired\s*salary|target\s*compensation|salary\s*expectation|compensation/i.test(l)) {
-        const inputType = await input.getAttribute("type");
         const numericOnly = /numeric|number|digits|without\s*special\s*char/i.test(l);
         if (inputType === "number" || numericOnly) {
           let numVal = "";
@@ -258,7 +626,6 @@ async function answerGeneralQuestions(page, profile, platform) {
           await input.fill(salText);
         }
       }
-      // 14. Links & Social Profiles in general loop (handles custom Greenhouse/Ashby link questions)
       else if (/linkedin/i.test(l)) {
         if (!isCombobox && profile.linkedinUrl) {
           await input.fill(profile.linkedinUrl);
@@ -278,8 +645,7 @@ async function answerGeneralQuestions(page, profile, platform) {
           if (urlVal) await input.fill(urlVal);
         }
       }
-      // 15. Consent / Interview recording / BrightHire / Policy / Terms
-      else if (/brighthire|interview.*record|consent.*record|record.*interview|record(ed)?|consent|agree.*terms|terms.*condition|privacy\s*policy/i.test(l)) {
+      else if (/brighthire|interview.*record|consent.*record|record.*interview|record(ed)?|consent|agree.*terms|terms.*condition|privacy\s*policy|certify|affirm|accurate/i.test(l)) {
         if (isCombobox) {
           await selectAnyOption(page, input, ["Yes", "Agree", "I agree", "Consent", "I consent", "true"]);
         } else {
@@ -291,13 +657,11 @@ async function answerGeneralQuestions(page, profile, platform) {
           }
         }
       }
-      // 16. "If you selected other, please specify"
       else if (/if\s*you\s*selected\s*.*other|please\s*specify/i.test(l)) {
         if (!isCombobox) {
           await input.fill("N/A");
         }
       }
-      // 17. Demographics in general loop
       else if (/gender/i.test(l)) {
         await selectAnyOption(page, input, [profile.demographics?.gender || "Decline", "Decline to Self-Identify"]);
       } else if (/race|ethnicity|hispanic|latino/i.test(l)) {
@@ -455,13 +819,235 @@ function formatDateForPicker(val) {
   return new Date().toISOString().split("T")[0];
 }
 
-async function runAutoApply({ url, platform, profile, dryRun, headless }) {
+/**
+ * Read back the values actually present in the form. A fill call resolving
+ * does not guarantee that a React control accepted or retained the value.
+ */
+async function auditForm(page) {
+  const rawFields = await page.evaluate(() => {
+    const visible = (el) => {
+      const style = window.getComputedStyle(el);
+      const rect = el.getBoundingClientRect();
+      return style.display !== "none" && style.visibility !== "hidden" && rect.width > 0 && rect.height > 0;
+    };
+    const clean = (value) => String(value || "").replace(/\s+/g, " ").trim();
+    const labelFor = (el) => {
+      if ((el.getAttribute("type") || "").toLowerCase() === "radio") {
+        const group = el.closest("fieldset, [role='radiogroup'], [role='group'], [class*='fieldEntry'], .field, .form-group");
+        const candidates = group
+          ? Array.from(group.querySelectorAll("legend, label, [class*='label']"))
+              .map((node) => clean(node.textContent))
+              .filter((text) => text && !/^(yes|no|true|false)$/i.test(text))
+          : [];
+        if (candidates.length) return candidates[0];
+      }
+      const nativeLabels = el.labels ? Array.from(el.labels).map((label) => label.textContent).filter(Boolean) : [];
+      if (nativeLabels.length) return clean(nativeLabels.join(" "));
+
+      const labelledBy = clean(el.getAttribute("aria-labelledby"));
+      if (labelledBy) {
+        const text = labelledBy
+          .split(/\s+/)
+          .map((id) => document.getElementById(id)?.textContent || "")
+          .filter(Boolean)
+          .join(" ");
+        if (text) return clean(text);
+      }
+
+      const direct = el.getAttribute("aria-label") || el.getAttribute("placeholder");
+      if (direct) return clean(direct);
+
+      const fieldset = el.closest("fieldset");
+      const legend = fieldset?.querySelector("legend");
+      if (legend?.textContent) return clean(legend.textContent);
+
+      const container = el.closest(
+        "[class*='fieldEntry'], .field, [class*='field'], .form-group, [role='group'], div:has(> label)",
+      );
+      const label = container?.querySelector("label");
+      if (label?.textContent) return clean(label.textContent);
+      return clean(container?.textContent || el.name || el.id || el.type || el.tagName);
+    };
+
+    const controls = Array.from(
+      document.querySelectorAll(
+        "input:not([type='hidden']):not([type='submit']):not([type='button']), select, textarea, [role='combobox']",
+      ),
+    ).filter((el) => !el.disabled && (el.type === "file" || visible(el)));
+
+    const seen = new Set();
+    const result = [];
+    for (const el of controls) {
+      const type = (el.getAttribute("type") || el.tagName || "").toLowerCase();
+      const label = labelFor(el);
+      const container = el.closest(
+        "[class*='fieldEntry'], .field, [class*='field'], .form-group, [role='group'], fieldset, div:has(> label)",
+      );
+      const containerText = clean(container?.textContent || "");
+      const required = Boolean(
+        el.required ||
+        el.getAttribute("aria-required") === "true" ||
+        container?.querySelector("[required], [aria-required='true'], .required") ||
+        (/\*|\(required\)/i.test(containerText) && !/\(optional\)/i.test(containerText)),
+      );
+
+      let key = `${label}|${el.name || el.id || type}`;
+      let value = "";
+      let filled = false;
+      if (type === "radio") {
+        const groupName = el.name;
+        key = `${label}|radio|${groupName}`;
+        const scope = container || document;
+        const radios = groupName
+          ? Array.from(document.querySelectorAll(`input[type="radio"][name="${CSS.escape(groupName)}"]`))
+          : Array.from(scope.querySelectorAll('input[type="radio"]'));
+        const checked = radios.find((radio) => radio.checked);
+        if (checked) {
+          const optionLabel = checked.labels
+            ? Array.from(checked.labels).map((node) => clean(node.textContent)).find(Boolean)
+            : "";
+          value = clean(optionLabel || checked.value);
+          filled = true;
+        }
+      } else if (type === "checkbox") {
+        value = el.checked ? clean(label || el.value || "Yes") : "";
+        filled = el.checked;
+      } else if (type === "file") {
+        value = Array.from(el.files || []).map((file) => file.name).join(", ");
+        filled = Boolean(value);
+      } else if (el.tagName === "SELECT") {
+        const option = el.options[el.selectedIndex];
+        value = clean(option?.textContent || el.value);
+        filled = Boolean(el.value && !/^(select|choose|please select|--)/i.test(value));
+      } else {
+        const isCombobox = el.getAttribute("role") === "combobox" || Boolean(el.closest(".select__control"));
+        if (isCombobox) {
+          const control = el.closest(".select__control") || container;
+          const selected = control?.querySelector(
+            "[aria-selected='true'], [class*='singleValue'], [class*='selectedValue'], [data-value]",
+          );
+          value = clean(selected?.textContent || selected?.getAttribute("data-value") || "");
+        } else {
+          value = clean(el.value);
+        }
+        filled = Boolean(value);
+      }
+
+      if (seen.has(key)) continue;
+      seen.add(key);
+      result.push({
+        label,
+        value,
+        id: el.id || "",
+        name: el.name || "",
+        required,
+        filled,
+        type,
+        valid: typeof el.checkValidity === "function" ? el.checkValidity() : true,
+      });
+    }
+
+    // Greenhouse replaces a successfully uploaded file input with a filename
+    // marker. Preserve that marker in the audit so a real upload can pass and
+    // a still-empty resume input cannot be mistaken for success.
+    for (const upload of document.querySelectorAll(".file-upload")) {
+      const filenameNode = upload.querySelector(".file-upload__filename p, .file-upload__filename");
+      const filename = clean(filenameNode?.textContent || "");
+      if (!filename) continue;
+      const uploadText = clean(upload.textContent || "");
+      const filenameIndex = uploadText.indexOf(filename);
+      const label = clean(filenameIndex >= 0 ? uploadText.slice(0, filenameIndex) : uploadText);
+      const key = `${label}|uploaded-file`;
+      if (seen.has(key)) continue;
+      seen.add(key);
+      result.push({
+        label,
+        value: filename,
+        id: /resume/i.test(label) ? "resume-uploaded" : "uploaded-file",
+        name: "",
+        required: /\*|\(required\)/i.test(label),
+        filled: true,
+        type: "file",
+        valid: true,
+      });
+    }
+    return result;
+  });
+
+  const importantCategories = new Set([
+    FieldCategory.CONTACT_FIRST_NAME,
+    FieldCategory.CONTACT_PREFERRED_NAME,
+    FieldCategory.CONTACT_LAST_NAME,
+    FieldCategory.CONTACT_FULL_NAME,
+    FieldCategory.CONTACT_EMAIL,
+    FieldCategory.DOC_RESUME,
+  ]);
+
+  const fields = rawFields.map((field) => {
+    const identifier = `${field.id} ${field.name}`.toLowerCase();
+    const classification = field.type === "file" && identifier.includes("resume")
+      ? { category: FieldCategory.DOC_RESUME }
+      : classifyField(field.label);
+    const important =
+      classification.category.startsWith("EDU_") || importantCategories.has(classification.category);
+    return {
+      ...field,
+      label: classification.category === FieldCategory.DOC_RESUME && /^attach$/i.test(field.label)
+        ? "Resume/CV"
+        : field.label,
+      category: classification.category,
+      mustFill: field.required || important,
+    };
+  });
+
+  const missing = fields.filter((field) => field.mustFill && (!field.filled || !field.valid));
+  return { fields, missing };
+}
+
+function auditError(missing) {
+  const details = missing
+    .slice(0, 8)
+    .map((field) => `"${field.label}"${field.category !== FieldCategory.UNKNOWN ? ` (${field.category})` : ""}`)
+    .join(", ");
+  return `Required form audit failed; missing or invalid fields: ${details}`;
+}
+
+async function fillDynamicQuestionsAndAudit(page, profile, platform, roleType) {
+  await answerGeneralQuestions(page, profile, platform, roleType);
+  await page.waitForTimeout(300);
+  // The first answers may reveal dependent questions or rerender controls.
+  await answerGeneralQuestions(page, profile, platform, roleType);
+  await page.waitForTimeout(200);
+  return auditForm(page);
+}
+
+async function launchBrowser(options) {
+  const candidates = [
+    chromium.executablePath(),
+    "C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe",
+    "C:\\Program Files (x86)\\Microsoft\\Edge\\Application\\msedge.exe",
+    "C:\\Program Files\\Microsoft\\Edge\\Application\\msedge.exe",
+  ].filter((candidate, index, all) => candidate && all.indexOf(candidate) === index && fs.existsSync(candidate));
+  let lastError;
+  for (const executablePath of candidates) {
+    try {
+      return await chromium.launch({ ...options, executablePath });
+    } catch (error) {
+      lastError = error;
+    }
+  }
+  if (lastError) throw lastError;
+  return chromium.launch(options);
+}
+
+async function runAutoApply({ url, platform, profile, dryRun, headless, roleType }) {
   const isHeadless = headless !== false;
+  const effectiveRoleType = roleType || (url.toLowerCase().includes("intern") ? "intern" : "fulltime");
   const launchArgs = isHeadless
     ? ["--disable-blink-features=AutomationControlled", "--no-sandbox"]
     : ["--disable-blink-features=AutomationControlled", "--no-sandbox"];
 
-  const browser = await chromium.launch({
+  const browser = await launchBrowser({
     headless: isHeadless,
     args: launchArgs,
     slowMo: isHeadless ? undefined : 60,
@@ -540,14 +1126,13 @@ async function runAutoApply({ url, platform, profile, dryRun, headless }) {
         '#phone',
       ], profile.phone);
 
-      // 3. Location / Address
+      // 3. Location / Address (with autocomplete support for Google Places / Greenhouse combobox)
       if (profile.address?.city || profile.address?.state) {
-        const loc = [profile.address.city, profile.address.state].filter(Boolean).join(", ");
-        await fillField(page, [
+        await fillLocationAutocomplete(page, [
           'input[name*="location" i]',
           'input[id*="location" i]',
           'input[id*="candidate_location" i]',
-        ], loc);
+        ], profile.address);
       }
 
       // 4. Resume upload
@@ -572,15 +1157,78 @@ async function runAutoApply({ url, platform, profile, dryRun, headless }) {
 
       // 6. School / Education
       if (profile.education?.school) {
-        await fillField(page, ['input[name*="school" i]', 'input[id*="school" i]'], profile.education.school);
+        const schoolInput = await page.$('input[name*="school" i], input[id*="school" i]');
+        if (schoolInput && (await schoolInput.isVisible())) {
+          await fillSchoolAutocomplete(page, schoolInput, profile.education.school);
+        } else {
+          await fillField(page, ['input[name*="school" i]', 'input[id*="school" i]'], profile.education.school);
+        }
       }
       if (profile.education?.degree) {
-        await fillField(page, ['input[name*="degree" i]', 'input[id*="degree" i]'], profile.education.degree);
-        await selectOption(page, ['select[name*="degree" i]', 'select[id*="degree" i]'], [profile.education.degree]);
+        const degreeCandidates = getDegreeOptionCandidates(profile.education.degree);
+        const degreeInput = await page.$('input[name*="degree" i], input[id*="degree" i]');
+        let selected = false;
+        if (degreeInput && await degreeInput.isVisible()) {
+          if (await isCustomCombobox(degreeInput)) {
+            selected = await selectAnyOption(page, degreeInput, degreeCandidates);
+          } else {
+            await degreeInput.fill(profile.education.degree);
+            selected = true;
+          }
+        }
+        if (!selected) {
+          await selectOption(page, ['select[name*="degree" i]', 'select[id*="degree" i]'], degreeCandidates);
+        }
       }
       if (profile.education?.discipline) {
-        await fillField(page, ['input[name*="discipline" i]', 'input[id*="discipline" i]'], profile.education.discipline);
-        await selectOption(page, ['select[name*="discipline" i]', 'select[id*="discipline" i]'], [profile.education.discipline]);
+        const disciplineInput = await page.$('input[name*="discipline" i], input[id*="discipline" i]');
+        let selected = false;
+        if (disciplineInput && await disciplineInput.isVisible()) {
+          if (await isCustomCombobox(disciplineInput)) {
+            selected = await selectAnyOption(page, disciplineInput, [profile.education.discipline]);
+          } else {
+            await disciplineInput.fill(profile.education.discipline);
+            selected = true;
+          }
+        }
+        if (!selected) {
+          await selectOption(page, ['select[name*="discipline" i]', 'select[id*="discipline" i]'], [profile.education.discipline]);
+        }
+      }
+      if (profile.education?.gpa) {
+        await fillField(page, [
+          'input[name*="gpa" i]',
+          'input[id*="gpa" i]',
+          'input[placeholder*="gpa" i]',
+          'input[aria-label*="gpa" i]',
+        ], String(profile.education.gpa));
+      }
+      if (profile.education?.startYear) {
+        const yr = String(profile.education.startYear);
+        await selectOption(page, [
+          'select[name*="start_date[year]" i]',
+          'select[id*="education_start_date_year" i]',
+        ], [yr]);
+        await fillField(page, [
+          'input[id^="start-year--" i]',
+          'input[name*="start_date[year]" i]',
+          'input[placeholder*="Start Year" i]',
+        ], yr);
+      }
+      if (profile.education?.startMonth) {
+        const months = normalizeMonth(profile.education.startMonth);
+        const monthInput = await page.$(
+          'input[id^="start-month--" i], input[name*="start_date[month]" i], input[placeholder*="Start Month" i]',
+        );
+        const selected = monthInput && await monthInput.isVisible()
+          ? await selectAnyOption(page, monthInput, months)
+          : false;
+        if (!selected) {
+          await selectOption(page, [
+            'select[name*="start_date[month]" i]',
+            'select[id*="education_start_date_month" i]',
+          ], months);
+        }
       }
       if (profile.education?.graduationYear) {
         const yr = String(profile.education.graduationYear);
@@ -590,6 +1238,7 @@ async function runAutoApply({ url, platform, profile, dryRun, headless }) {
           'select[name*="year" i]',
         ], [yr]);
         await fillField(page, [
+          'input[id^="end-year--" i]',
           'input[name*="end_date[year]" i]',
           'input[placeholder*="Graduation Year" i]',
           'input[placeholder*="Year" i]',
@@ -597,21 +1246,26 @@ async function runAutoApply({ url, platform, profile, dryRun, headless }) {
       }
       if (profile.education?.graduationMonth) {
         const months = normalizeMonth(profile.education.graduationMonth);
-        await selectOption(page, [
-          'select[name*="end_date[month]" i]',
-          'select[id*="education_end_date_month" i]',
-          'select[name*="month" i]',
-        ], months);
-        await fillField(page, [
-          'input[name*="end_date[month]" i]',
-          'input[placeholder*="Graduation Month" i]',
-          'input[placeholder*="Month" i]',
-        ], months[0]);
+        const monthInput = await page.$(
+          'input[id^="end-month--" i], input[name*="end_date[month]" i], input[placeholder*="Graduation Month" i]',
+        );
+        const selected = monthInput && await monthInput.isVisible()
+          ? await selectAnyOption(page, monthInput, months)
+          : false;
+        if (!selected) {
+          await selectOption(page, [
+            'select[name*="end_date[month]" i]',
+            'select[id*="education_end_date_month" i]',
+            'select[name*="month" i]',
+          ], months);
+        }
       }
 
       // 7. Work Authorization & Compliance standard dropdowns
-      await selectOption(page, ['select[name*="authorized" i]', 'select[id*="authorized" i]'], ["Yes", "true"]);
-      await selectOption(page, ['select[name*="sponsorship" i]', 'select[id*="sponsorship" i]'], ["No", "false"]);
+      const authPreferred = profile.workAuthorization?.authorizedInUS === false ? ["No", "false"] : ["Yes", "true"];
+      const sponsorshipPreferred = profile.workAuthorization?.requiresSponsorship === true ? ["Yes", "true"] : ["No", "false"];
+      await selectOption(page, ['select[name*="authorized" i]', 'select[id*="authorized" i]'], authPreferred);
+      await selectOption(page, ['select[name*="sponsorship" i]', 'select[id*="sponsorship" i]'], sponsorshipPreferred);
 
       // Relocation
       const relocatePreferred = profile.willingToRelocate === false ? ["No", "false"] : ["Yes", "true"];
@@ -622,20 +1276,24 @@ async function runAutoApply({ url, platform, profile, dryRun, headless }) {
       ], relocatePreferred);
 
       // Commute / Onsite / Hybrid
-      await selectOption(page, [
-        'select[name*="commute" i]',
-        'select[id*="commute" i]',
-        'select[name*="onsite" i]',
-        'select[id*="onsite" i]',
-        'select[name*="hybrid" i]',
-      ], ["Yes", "true"]);
+      if (profile.answers?.willingOnsite !== undefined) {
+        await selectOption(page, [
+          'select[name*="commute" i]',
+          'select[id*="commute" i]',
+          'select[name*="onsite" i]',
+          'select[id*="onsite" i]',
+          'select[name*="hybrid" i]',
+        ], profile.answers.willingOnsite ? ["Yes", "true"] : ["No", "false"]);
+      }
 
       // Legal age (18+)
-      await selectOption(page, [
-        'select[name*="18" i]',
-        'select[id*="18" i]',
-        'select[name*="legal_age" i]',
-      ], ["Yes", "true"]);
+      if (profile.answers?.over18 !== undefined) {
+        await selectOption(page, [
+          'select[name*="18" i]',
+          'select[id*="18" i]',
+          'select[name*="legal_age" i]',
+        ], profile.answers.over18 ? ["Yes", "true"] : ["No", "false"]);
+      }
 
       // 8. EEO Demographics standard defaults
       await selectOption(page, ['select[name*="gender" i]', 'select[id*="gender" i]'], [profile.demographics?.gender || "Decline", "Decline to Self-Identify"]);
@@ -644,7 +1302,12 @@ async function runAutoApply({ url, platform, profile, dryRun, headless }) {
       await selectOption(page, ['select[name*="disability" i]', 'select[id*="disability" i]'], [profile.demographics?.disability || "Decline", "No, I do not", "Decline to Self-Identify"]);
 
       // 9. General Question Answering (custom text inputs/comboboxes for right to work, legal name, referral, etc.)
-      await answerGeneralQuestions(page, profile, "greenhouse");
+      const audit = await fillDynamicQuestionsAndAudit(page, profile, "greenhouse", effectiveRoleType);
+      if (audit.missing.length > 0) {
+        if (!isHeadless) await page.waitForTimeout(3000);
+        await browser.close();
+        return { success: false, error: auditError(audit.missing), fields: audit.fields };
+      }
 
       // 10. Submit or Dry-run
       if (dryRun) {
@@ -652,7 +1315,7 @@ async function runAutoApply({ url, platform, profile, dryRun, headless }) {
           await page.waitForTimeout(4000);
         }
         await browser.close();
-        return { success: true, dryRun: true, message: "Dry-run: Greenhouse form filled successfully" };
+        return { success: true, dryRun: true, message: "Dry-run: Greenhouse form filled and audited successfully", fields: audit.fields };
       }
 
       const submitBtn = await page.$(
@@ -712,7 +1375,7 @@ async function runAutoApply({ url, platform, profile, dryRun, headless }) {
 
       if (!isHeadless) await page.waitForTimeout(2000);
       await browser.close();
-      return { success: true, confirmationUrl };
+      return { success: true, confirmationUrl, fields: audit.fields };
 
     } else if (platform === "ashby") {
       // Ashby form fields
@@ -767,21 +1430,81 @@ async function runAutoApply({ url, platform, profile, dryRun, headless }) {
 
       // 5. School / Education in Ashby
       if (profile.education?.school) {
-        await fillField(page, ['input[name*="school" i]', 'input[placeholder*="School" i]'], profile.education.school);
+        const schoolInput = await page.$('input[name*="school" i], input[placeholder*="School" i]');
+        if (schoolInput && (await schoolInput.isVisible())) {
+          await fillSchoolAutocomplete(page, schoolInput, profile.education.school);
+        } else {
+          await fillField(page, ['input[name*="school" i]', 'input[placeholder*="School" i]'], profile.education.school);
+        }
       }
       if (profile.education?.degree) {
-        await fillField(page, ['input[name*="degree" i]', 'input[placeholder*="Degree" i]'], profile.education.degree);
+        const degreeCandidates = getDegreeOptionCandidates(profile.education.degree);
+        const degreeInput = await page.$('input[name*="degree" i], input[placeholder*="Degree" i]');
+        let selected = false;
+        if (degreeInput && await degreeInput.isVisible()) {
+          if (await isCustomCombobox(degreeInput)) {
+            selected = await selectAnyOption(page, degreeInput, degreeCandidates);
+          } else {
+            await degreeInput.fill(profile.education.degree);
+            selected = true;
+          }
+        }
+        if (!selected) {
+          await selectOption(page, ['select[name*="degree" i]'], degreeCandidates);
+        }
       }
       if (profile.education?.discipline) {
-        await fillField(page, ['input[name*="discipline" i]', 'input[name*="major" i]'], profile.education.discipline);
+        const disciplineInput = await page.$('input[name*="discipline" i], input[name*="major" i]');
+        if (disciplineInput && await disciplineInput.isVisible()) {
+          const isCombobox = await disciplineInput.getAttribute("role") === "combobox";
+          if (isCombobox) {
+            await selectAnyOption(page, disciplineInput, [profile.education.discipline]);
+          } else {
+            await disciplineInput.fill(profile.education.discipline);
+          }
+        }
+      }
+      if (profile.education?.gpa) {
+        await fillField(page, [
+          'input[name*="gpa" i]',
+          'input[placeholder*="GPA" i]',
+          'input[id*="gpa" i]',
+          'input[aria-label*="gpa" i]',
+        ], String(profile.education.gpa));
+      }
+      if (profile.education?.startYear) {
+        await fillField(page, [
+          'input[name*="start_year" i]',
+          'input[id^="start-year--" i]',
+          'input[placeholder*="Start Year" i]',
+        ], String(profile.education.startYear));
+      }
+      if (profile.education?.startMonth) {
+        const months = normalizeMonth(profile.education.startMonth);
+        const startMonthInput = await page.$(
+          'input[name*="start_month" i], input[id^="start-month--" i], input[placeholder*="Start Month" i]',
+        );
+        if (startMonthInput && await startMonthInput.isVisible()) {
+          await selectAnyOption(page, startMonthInput, months);
+        }
       }
       if (profile.education?.graduationYear) {
         const yr = String(profile.education.graduationYear);
-        await fillField(page, ['input[name*="graduation_year" i]', 'input[placeholder*="Graduation Year" i]', 'input[name*="graduation" i]'], yr);
+        await fillField(page, [
+          'input[name*="graduation_year" i]',
+          'input[id^="end-year--" i]',
+          'input[placeholder*="Graduation Year" i]',
+          'input[name*="graduation" i]',
+        ], yr);
       }
       if (profile.education?.graduationMonth) {
         const months = normalizeMonth(profile.education.graduationMonth);
-        await fillField(page, ['input[name*="graduation_month" i]', 'input[placeholder*="Graduation Month" i]'], months[0]);
+        const endMonthInput = await page.$(
+          'input[name*="graduation_month" i], input[id^="end-month--" i], input[placeholder*="Graduation Month" i]',
+        );
+        if (endMonthInput && await endMonthInput.isVisible()) {
+          await selectAnyOption(page, endMonthInput, months);
+        }
       }
 
       // 6. Work auth, relocation, and compliance radios/buttons in Ashby
@@ -795,30 +1518,49 @@ async function runAutoApply({ url, platform, profile, dryRun, headless }) {
           const parentText = await btn.evaluate(el => el.closest('div')?.textContent || '');
           const pLower = parentText.toLowerCase();
 
-          if (pLower.includes('authorized to work') || pLower.includes('right to work') || pLower.includes('onsite') || pLower.includes('commute') || pLower.includes('18 years') || pLower.includes('hybrid') || pLower.includes('in-office')) {
+          if (pLower.includes('authorized to work') || pLower.includes('right to work')) {
             if (authYes && text.toLowerCase().includes('yes')) await btn.click();
             if (!authYes && text.toLowerCase().includes('no')) await btn.click();
+          } else if (pLower.includes('onsite') || pLower.includes('commute') || pLower.includes('hybrid') || pLower.includes('in-office')) {
+            const onsite = profile.answers?.willingOnsite;
+            if (onsite === true && text.toLowerCase().includes('yes')) await btn.click();
+            if (onsite === false && text.toLowerCase().includes('no')) await btn.click();
+          } else if (pLower.includes('18 years') || pLower.includes('at least 18')) {
+            const over18 = profile.answers?.over18;
+            if (over18 === true && text.toLowerCase().includes('yes')) await btn.click();
+            if (over18 === false && text.toLowerCase().includes('no')) await btn.click();
           } else if (pLower.includes('relocate') || pLower.includes('relocation')) {
             if (relocateYes && text.toLowerCase().includes('yes')) await btn.click();
             if (!relocateYes && text.toLowerCase().includes('no')) await btn.click();
           } else if (pLower.includes('sponsorship')) {
             if (!sponsorshipYes && text.toLowerCase().includes('no')) await btn.click();
             if (sponsorshipYes && text.toLowerCase().includes('yes')) await btn.click();
-          } else if (pLower.includes('previously worked') || pLower.includes('former employee') || pLower.includes('non-compete')) {
-            if (text.toLowerCase().includes('no')) await btn.click();
+          } else if (pLower.includes('previously worked') || pLower.includes('former employee')) {
+            const previous = profile.answers?.previousEmployee;
+            if (previous === true && text.toLowerCase().includes('yes')) await btn.click();
+            if (previous === false && text.toLowerCase().includes('no')) await btn.click();
+          } else if (pLower.includes('non-compete')) {
+            const nonCompete = profile.answers?.subjectToNonCompete;
+            if (nonCompete === true && text.toLowerCase().includes('yes')) await btn.click();
+            if (nonCompete === false && text.toLowerCase().includes('no')) await btn.click();
           }
         }
       } catch {}
 
       // 7. General Question Answering for Ashby
-      await answerGeneralQuestions(page, profile, "ashby");
+      const audit = await fillDynamicQuestionsAndAudit(page, profile, "ashby", effectiveRoleType);
+      if (audit.missing.length > 0) {
+        if (!isHeadless) await page.waitForTimeout(3000);
+        await browser.close();
+        return { success: false, error: auditError(audit.missing), fields: audit.fields };
+      }
 
       if (dryRun) {
         if (!isHeadless) {
           await page.waitForTimeout(4000);
         }
         await browser.close();
-        return { success: true, dryRun: true, message: "Dry-run: Ashby form filled successfully" };
+        return { success: true, dryRun: true, message: "Dry-run: Ashby form filled and audited successfully", fields: audit.fields };
       }
 
       const submitBtn = await page.$(
@@ -831,12 +1573,15 @@ async function runAutoApply({ url, platform, profile, dryRun, headless }) {
 
       // Listen for GraphQL response
       let graphQlError = "";
+      let graphQlSubmitted = false;
       page.on("response", async (response) => {
         try {
           if (response.url().includes("ApiSubmitSingleApplicationFormAction")) {
             const data = await response.json();
             if (data.errors && data.errors.length > 0) {
               graphQlError = data.errors.map(e => e.message).join("; ");
+            } else if (response.ok()) {
+              graphQlSubmitted = true;
             }
           }
         } catch {}
@@ -854,9 +1599,10 @@ async function runAutoApply({ url, platform, profile, dryRun, headless }) {
         const content = (await page.content()).toLowerCase();
 
         if (
+          graphQlSubmitted ||
           confirmationUrl.includes("confirmation") ||
           confirmationUrl.includes("applied") ||
-          content.includes("thank you") ||
+          content.includes("thank you for applying") ||
           content.includes("application submitted") ||
           content.includes("we have received your application") ||
           content.includes("application has been submitted")
@@ -891,7 +1637,7 @@ async function runAutoApply({ url, platform, profile, dryRun, headless }) {
 
       if (!isHeadless) await page.waitForTimeout(2000);
       await browser.close();
-      return { success: true, confirmationUrl };
+      return { success: true, confirmationUrl, fields: audit.fields };
     }
 
     await browser.close();
@@ -920,4 +1666,4 @@ if (require.main === module) {
   });
 }
 
-module.exports = { runAutoApply };
+module.exports = { runAutoApply, bestOptionIndex };

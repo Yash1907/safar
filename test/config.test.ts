@@ -2,7 +2,7 @@ import { describe, expect, test } from "bun:test";
 import { writeFileSync, mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { loadConfig, defaultConfig, resolveConfigPath } from "../src/config.ts";
+import { loadConfig, defaultConfig, resolveConfigPath, resolveProfileForRole } from "../src/config.ts";
 import { buildSources } from "../src/sources/registry.ts";
 
 function tmpConfigPath(contents: string): string {
@@ -92,6 +92,67 @@ describe("loadConfig", () => {
   test("a sheets section missing required fields is treated as unconfigured (null), not a crash", () => {
     const path = tmpConfigPath(JSON.stringify({ sheets: { enabled: true } }));
     expect(loadConfig(path).sheets).toBeNull();
+  });
+
+  test("parses explicit application answers and custom answer overrides", () => {
+    const path = tmpConfigPath(
+      JSON.stringify({
+        profile: {
+          firstName: "Jane",
+          lastName: "Doe",
+          email: "jane@example.com",
+          answers: {
+            over18: false,
+            previousEmployee: true,
+            referralSource: "Career fair",
+          },
+          customAnswers: [
+            { match: "preferred language", answer: "TypeScript" },
+            { match: "/weekends?/i", answer: false },
+            { match: "invalid", answer: { nested: true } },
+          ],
+        },
+      }),
+    );
+    const profile = loadConfig(path).profile!;
+    expect(profile.answers).toEqual({
+      over18: false,
+      previousEmployee: true,
+      referralSource: "Career fair",
+    });
+    expect(profile.customAnswers).toEqual([
+      { match: "preferred language", answer: "TypeScript" },
+      { match: "/weekends?/i", answer: false },
+    ]);
+  });
+
+  test("parses education start dates in base and role-specific profiles", () => {
+    const path = tmpConfigPath(
+      JSON.stringify({
+        profile: {
+          firstName: "Jane",
+          lastName: "Doe",
+          email: "jane@example.com",
+          education: {
+            school: "Rutgers University - New Brunswick",
+            startYear: 2023,
+            startMonth: "September",
+            graduationYear: 2027,
+            graduationMonth: "December",
+          },
+          intern: {
+            education: { startMonth: 8 },
+          },
+        },
+      }),
+    );
+    const profile = loadConfig(path).profile!;
+    expect(profile.education?.startYear).toBe(2023);
+    expect(profile.education?.startMonth).toBe("September");
+    expect(profile.intern?.education?.startMonth).toBe(8);
+    const internProfile = resolveProfileForRole(profile, "intern")!;
+    expect(internProfile.education?.startYear).toBe(2023);
+    expect(internProfile.education?.startMonth).toBe(8);
   });
 });
 

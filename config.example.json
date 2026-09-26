@@ -88,6 +88,8 @@
       "school": "University of California, Berkeley",
       "degree": "Bachelor of Science",
       "discipline": "Computer Science",
+      "startYear": 2022,
+      "startMonth": 8,
       "graduationYear": 2026,
       "graduationMonth": 5,
       "gpa": "3.85"
@@ -104,6 +106,25 @@
       "veteran": "Decline to Self-Identify",
       "disability": "Decline to Self-Identify"
     },
+    "answers": {
+      "over18": true,
+      "willingOnsite": true,
+      "currentStudent": true,
+      "previousEmployee": false,
+      "hasRelativesAtCompany": false,
+      "subjectToNonCompete": false,
+      "felonyConviction": false,
+      "referralSource": "LinkedIn",
+      "noticePeriod": "None",
+      "program": "Summer Internship",
+      "pronouns": "Prefer not to say"
+    },
+    "customAnswers": [
+      {
+        "match": "preferred programming language",
+        "answer": "TypeScript"
+      }
+    ],
     "intern": {
       "resumePath": "C:\\path\\to\\intern_resume.pdf",
       "willingToRelocate": true,

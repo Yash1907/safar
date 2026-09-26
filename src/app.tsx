@@ -320,7 +320,7 @@ export function App({ db }: { db: Database }) {
           }
           dispatch({
             type: "SET_STATUS_MESSAGE",
-            message: `✅ Auto-applied to ${job.company} [${roleStr}]${res.dryRun ? " (dry-run)" : ""}`,
+            message: `✅ Auto-applied to ${job.company} [${roleStr}]${res.dryRun ? " (dry-run)" : ""}${res.warning ? ` — ${res.warning}` : ""}`,
           });
         } else {
           refreshSkippedJobs();

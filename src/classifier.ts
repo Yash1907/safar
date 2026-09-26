@@ -1,5 +1,10 @@
 import { detectJobSite } from "./site.ts";
 import type { JobRecord } from "./db/repo.ts";
+import { classifyField, FieldCategory } from "./applier/field-classifier.cjs";
+import { resolveFieldValue } from "./applier/field-classifier.cjs";
+import type { ProfileConfig } from "./config.ts";
+import type { RoleType } from "./role.ts";
+export { classifyField, FieldCategory };
 
 export type SupportedPlatform = "greenhouse" | "ashby";
 
@@ -19,6 +24,25 @@ export interface ClassificationResult {
   reason?: string;
   questions?: QuestionInfo[];
   jobTitle?: string;
+}
+
+export function canResolveQuestion(
+  question: QuestionInfo,
+  profile: ProfileConfig,
+  roleType: RoleType,
+): boolean {
+  const classified = classifyField(question.label);
+  if (classified.category === FieldCategory.DOC_RESUME) return Boolean(profile.resumePath);
+  if (classified.category === FieldCategory.DOC_COVER_LETTER) return false;
+  const resolved = resolveFieldValue(classified.category, profile, roleType, {
+    label: question.label,
+    options: question.options,
+    type: question.type,
+  });
+  if (!resolved) return false;
+  if (resolved.booleanVal !== undefined) return true;
+  if (typeof resolved.text === "string" && resolved.text.trim()) return true;
+  return Array.isArray(resolved.optionCandidates) && resolved.optionCandidates.some(Boolean);
 }
 
 // Regex patterns that define allowed standard/default questions
@@ -209,6 +233,16 @@ const STANDARD_FIELD_PATTERNS = [
   /\bif\s*you\s*selected\s*.*other\b/i,
   /\bplease\s*specify\b/i,
   /\bother\b/i,
+  /\badditional\s*information\b/i,
+
+  // Signatures and Dates
+  /\b(electronic|digital|acknowledg\w*)?\s*sign(ature|ed)?\b/i,
+  /\btype\s*(your\s*)?(full\s*)?name(\s*to\s*sign|\s*as\s*signature)?\b/i,
+  /\bapplicant\s*signature\b/i,
+  /\btoday('?s)?\s*date\b/i,
+  /\bdate\s*of\s*(signature|signing|application)\b/i,
+  /\bsign(ature)?\s*date\b/i,
+  /\bcurrent\s*date\b/i,
 ];
 
 // Patterns that identify custom/essay questions that DISQUALIFY a job from being "default"
@@ -238,7 +272,11 @@ const CUSTOM_QUESTION_PATTERNS = [
 export function isStandardQuestion(label: string): boolean {
   const clean = label.trim();
   if (!clean) return true;
-  return STANDARD_FIELD_PATTERNS.some((pattern) => pattern.test(clean));
+  if (STANDARD_FIELD_PATTERNS.some((pattern) => pattern.test(clean))) {
+    return true;
+  }
+  const fieldClass = classifyField(clean);
+  return fieldClass.category !== FieldCategory.UNKNOWN && fieldClass.category !== FieldCategory.CUSTOM_ESSAY;
 }
 
 /**
@@ -447,6 +485,8 @@ export async function fetchAshbyQuestions(
  */
 export async function classifyJob(
   job: Pick<JobRecord, "url" | "company" | "title">,
+  profile?: ProfileConfig,
+  roleType: RoleType = "fulltime",
 ): Promise<ClassificationResult> {
   const platform = detectPlatform(job.url);
 
@@ -485,7 +525,7 @@ export async function classifyJob(
     if (!label) continue;
 
     // Check for explicit custom question patterns (even if optional, essay questions violate default job definition)
-    if (isCustomQuestion(label)) {
+    if (isCustomQuestion(label) && !(profile && canResolveQuestion(q, profile, roleType))) {
       return {
         platform,
         isEligiblePlatform: true,
@@ -497,12 +537,25 @@ export async function classifyJob(
     }
 
     // Required questions MUST be standard fields
-    if (q.required && !isStandardQuestion(label)) {
+    if (q.required && !isStandardQuestion(label) && !(profile && canResolveQuestion(q, profile, roleType))) {
       return {
         platform,
         isEligiblePlatform: true,
         isDefaultJob: false,
         reason: `Non-standard required field: "${label}"`,
+        questions,
+        jobTitle: title,
+      };
+    }
+
+    // Platform eligibility is not enough: the selected profile must contain a
+    // usable answer for every required question before a browser is launched.
+    if (q.required && profile && !canResolveQuestion(q, profile, roleType)) {
+      return {
+        platform,
+        isEligiblePlatform: true,
+        isDefaultJob: false,
+        reason: `No configured answer for required field: "${label}"`,
         questions,
         jobTitle: title,
       };

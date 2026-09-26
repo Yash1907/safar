@@ -30,6 +30,8 @@ export interface EducationConfig {
   school: string;
   degree?: string; // e.g. "Bachelor of Science"
   discipline?: string; // e.g. "Computer Science"
+  startYear?: number; // e.g. 2023
+  startMonth?: number | string; // 1-12, "09", or "September"
   graduationYear?: number; // e.g. 2026
   graduationMonth?: number | string; // 1-12, "05", or "May"
   gpa?: string; // e.g. "3.8"
@@ -47,6 +49,28 @@ export interface WorkAuthorizationConfig {
   requiresSponsorship?: boolean; // default false
   willingToRelocate?: boolean; // default true
   statusText?: string; // e.g. "US Citizen", "Permanent Resident", or custom right-to-work text
+}
+
+export interface ApplicationAnswersConfig {
+  over18?: boolean;
+  willingOnsite?: boolean;
+  currentStudent?: boolean;
+  previousEmployee?: boolean;
+  hasRelativesAtCompany?: boolean;
+  subjectToNonCompete?: boolean;
+  felonyConviction?: boolean;
+  referralSource?: string;
+  noticePeriod?: string;
+  program?: string;
+  pronouns?: string;
+  currentEmployer?: string;
+  currentTitle?: string;
+}
+
+export interface CustomAnswerConfig {
+  /** Case-insensitive substring, or /regular expression/flags. */
+  match: string;
+  answer: string | number | boolean | string[];
 }
 
 export interface RoleProfileOverride {
@@ -71,6 +95,8 @@ export interface RoleProfileOverride {
   education?: Partial<EducationConfig>;
   workAuthorization?: WorkAuthorizationConfig;
   demographics?: DemographicsConfig;
+  answers?: ApplicationAnswersConfig;
+  customAnswers?: CustomAnswerConfig[];
 }
 
 export interface ProfileConfig {
@@ -95,6 +121,8 @@ export interface ProfileConfig {
   education?: EducationConfig;
   workAuthorization?: WorkAuthorizationConfig;
   demographics?: DemographicsConfig;
+  answers?: ApplicationAnswersConfig;
+  customAnswers?: CustomAnswerConfig[];
 
   /** Overrides used when applying to internship roles */
   intern?: RoleProfileOverride;
@@ -102,6 +130,58 @@ export interface ProfileConfig {
   fulltime?: RoleProfileOverride;
   /** Alias for fulltime */
   ft?: RoleProfileOverride;
+}
+
+function parseApplicationAnswers(raw: unknown): ApplicationAnswersConfig | undefined {
+  if (!raw || typeof raw !== "object") return undefined;
+  const r = raw as Record<string, unknown>;
+  const parsed: ApplicationAnswersConfig = {};
+  const booleanKeys: (keyof ApplicationAnswersConfig)[] = [
+    "over18",
+    "willingOnsite",
+    "currentStudent",
+    "previousEmployee",
+    "hasRelativesAtCompany",
+    "subjectToNonCompete",
+    "felonyConviction",
+  ];
+  const stringKeys: (keyof ApplicationAnswersConfig)[] = [
+    "referralSource",
+    "noticePeriod",
+    "program",
+    "pronouns",
+    "currentEmployer",
+    "currentTitle",
+  ];
+  for (const key of booleanKeys) {
+    if (typeof r[key] === "boolean") (parsed as Record<string, unknown>)[key] = r[key];
+  }
+  for (const key of stringKeys) {
+    if (typeof r[key] === "string" && r[key].trim()) {
+      (parsed as Record<string, unknown>)[key] = r[key].trim();
+    }
+  }
+  return parsed;
+}
+
+function parseCustomAnswers(raw: unknown): CustomAnswerConfig[] | undefined {
+  if (!Array.isArray(raw)) return undefined;
+  const answers = raw.flatMap((item): CustomAnswerConfig[] => {
+    if (!item || typeof item !== "object") return [];
+    const value = item as Record<string, unknown>;
+    if (typeof value.match !== "string" || !value.match.trim()) return [];
+    const answer = value.answer;
+    if (
+      typeof answer !== "string" &&
+      typeof answer !== "number" &&
+      typeof answer !== "boolean" &&
+      !(Array.isArray(answer) && answer.every((part) => typeof part === "string"))
+    ) {
+      return [];
+    }
+    return [{ match: value.match.trim(), answer: answer as CustomAnswerConfig["answer"] }];
+  });
+  return answers.length ? answers : undefined;
 }
 
 export interface AutoApplyConfig {
@@ -277,6 +357,14 @@ function parseRoleProfileOverride(raw: unknown): RoleProfileOverride | undefined
         typeof r.education.discipline === "string"
           ? r.education.discipline.trim()
           : undefined,
+      startYear:
+        typeof r.education.startYear === "number"
+          ? r.education.startYear
+          : undefined,
+      startMonth:
+        typeof r.education.startMonth === "number" || typeof r.education.startMonth === "string"
+          ? r.education.startMonth
+          : undefined,
       graduationYear:
         typeof r.education.graduationYear === "number"
           ? r.education.graduationYear
@@ -318,6 +406,8 @@ function parseRoleProfileOverride(raw: unknown): RoleProfileOverride | undefined
       disability: r.demographics.disability,
     };
   }
+  override.answers = parseApplicationAnswers(r.answers);
+  override.customAnswers = parseCustomAnswers(r.customAnswers);
 
   return override;
 }
@@ -375,6 +465,14 @@ function parseProfileConfig(raw: unknown): ProfileConfig | null {
               typeof r.education.discipline === "string"
                 ? r.education.discipline.trim()
                 : undefined,
+            startYear:
+              typeof r.education.startYear === "number"
+                ? r.education.startYear
+                : undefined,
+            startMonth:
+              typeof r.education.startMonth === "number" || typeof r.education.startMonth === "string"
+                ? r.education.startMonth
+                : undefined,
             graduationYear:
               typeof r.education.graduationYear === "number"
                 ? r.education.graduationYear
@@ -407,6 +505,8 @@ function parseProfileConfig(raw: unknown): ProfileConfig | null {
             disability: r.demographics.disability || "Decline to Self-Identify",
           }
         : undefined,
+    answers: parseApplicationAnswers(r.answers),
+    customAnswers: parseCustomAnswers(r.customAnswers),
     intern: internOverride,
     fulltime: ftOverride,
     ft: ftOverride,
@@ -464,6 +564,14 @@ export function resolveProfileForRole(
           school: override.education.school ?? profile.education?.school ?? "",
           degree: override.education.degree ?? profile.education?.degree,
           discipline: override.education.discipline ?? profile.education?.discipline,
+          startYear:
+            override.education.startYear !== undefined
+              ? override.education.startYear
+              : profile.education?.startYear,
+          startMonth:
+            override.education.startMonth !== undefined
+              ? override.education.startMonth
+              : profile.education?.startMonth,
           graduationYear:
             override.education.graduationYear !== undefined
               ? override.education.graduationYear
@@ -497,6 +605,8 @@ export function resolveProfileForRole(
     demographics: override.demographics
       ? { ...profile.demographics, ...override.demographics }
       : profile.demographics,
+    answers: override.answers ? { ...profile.answers, ...override.answers } : profile.answers,
+    customAnswers: override.customAnswers ?? profile.customAnswers,
     intern: profile.intern,
     fulltime: profile.fulltime,
     ft: profile.ft,

@@ -6,7 +6,13 @@ import {
   parseGreenhouseUrl,
   parseAshbyUrl,
   classifyJob,
+  canResolveQuestion,
 } from "../src/classifier.ts";
+import {
+  FieldCategory,
+  classifyField,
+  resolveFieldValue,
+} from "../src/applier/field-classifier.cjs";
 
 describe("detectPlatform", () => {
   it("identifies greenhouse URLs", () => {
@@ -101,6 +107,24 @@ describe("isStandardQuestion", () => {
     expect(isStandardQuestion("If you selected \"Other\", please specify below")).toBe(true);
     expect(isStandardQuestion("What is your desired salary?")).toBe(true);
   });
+
+  it("identifies signatures, dates, ITAR, and graduation date ranges", () => {
+    expect(isStandardQuestion("Signature")).toBe(true);
+    expect(isStandardQuestion("Electronic Signature")).toBe(true);
+    expect(isStandardQuestion("Please type your full legal name to sign")).toBe(true);
+    expect(isStandardQuestion("Today's Date")).toBe(true);
+    expect(isStandardQuestion("Signature Date")).toBe(true);
+    expect(isStandardQuestion("Are you a U.S. Person under ITAR?")).toBe(true);
+    expect(isStandardQuestion("Do you expect to graduate between October 2027 and June 2028?")).toBe(true);
+    expect(isStandardQuestion("What internship program are you applying for?")).toBe(true);
+    expect(isStandardQuestion("When are you able to join Astranis as an intern? (12 week minimum)")).toBe(true);
+    expect(isStandardQuestion("Please indicate all of the locations that you would be interested in relocating to for this position.")).toBe(true);
+    expect(isStandardQuestion("Are you currently enrolled in a degree program?")).toBe(true);
+    expect(isStandardQuestion("Are you currently employed by, or have you previously been employed by, Deloitte?")).toBe(true);
+    expect(isStandardQuestion("Do you have any immediate family members working here?")).toBe(true);
+    expect(isStandardQuestion("Have you ever been convicted of a felony?")).toBe(true);
+    expect(isStandardQuestion("How did you first learn about Grow Therapy?")).toBe(true);
+  });
 });
 
 describe("isCustomQuestion", () => {
@@ -139,5 +163,161 @@ describe("classifyJob", () => {
     expect(res.isDefaultJob).toBe(false);
     expect(res.isEligiblePlatform).toBe(false);
     expect(res.reason).toContain("Unsupported platform");
+  });
+});
+
+describe("Field Classifier & Answer Resolver", () => {
+  const mockProfile: any = {
+    firstName: "Jane",
+    lastName: "Doe",
+    email: "jane@example.com",
+    phone: "1234567890",
+    education: {
+      school: "UC Berkeley",
+      degree: "Bachelor of Science",
+      discipline: "Computer Science",
+      startYear: 2022,
+      startMonth: 9,
+      graduationYear: 2026,
+      graduationMonth: 5,
+      gpa: "3.85",
+    },
+    workAuthorization: {
+      authorizedInUS: true,
+      requiresSponsorship: false,
+      statusText: "US Citizen",
+    },
+    startDate: "Summer 2026",
+  };
+
+  it("classifies and resolves education fields", () => {
+    const schoolRes = classifyField("What university do you attend?");
+    expect(schoolRes.category).toBe(FieldCategory.EDU_SCHOOL);
+    const schoolAns = resolveFieldValue(schoolRes.category, mockProfile, "intern");
+    expect(schoolAns.text).toBe("UC Berkeley");
+
+    const gpaRes = classifyField("Cumulative GPA");
+    expect(gpaRes.category).toBe(FieldCategory.EDU_GPA);
+    const gpaAns = resolveFieldValue(gpaRes.category, mockProfile, "intern");
+    expect(gpaAns.text).toBe("3.85");
+
+    const degRes = classifyField("Degree Level");
+    expect(degRes.category).toBe(FieldCategory.EDU_DEGREE);
+    const degAns = resolveFieldValue(degRes.category, mockProfile, "intern");
+    expect(degAns.optionCandidates).toContain("Bachelor's Degree");
+    expect(degAns.optionCandidates).toContain("Bachelor of Science");
+
+    const startMonth = classifyField("Start date Month");
+    expect(startMonth.category).toBe(FieldCategory.EDU_START_MONTH);
+    expect(resolveFieldValue(startMonth.category, mockProfile, "intern").optionCandidates).toContain("September");
+
+    const startYear = classifyField("Start date Year");
+    expect(startYear.category).toBe(FieldCategory.EDU_START_YEAR);
+    expect(resolveFieldValue(startYear.category, mockProfile, "intern").text).toBe("2022");
+
+    expect(classifyField("End date Month").category).toBe(FieldCategory.EDU_GRAD_MONTH);
+    expect(classifyField("End date Year").category).toBe(FieldCategory.EDU_GRAD_YEAR);
+  });
+
+  it("classifies and resolves signatures and dates", () => {
+    const sigRes = classifyField("Please type your full legal name to sign");
+    expect(sigRes.category).toBe(FieldCategory.SIGNATURE);
+    const sigAns = resolveFieldValue(sigRes.category, mockProfile, "intern");
+    expect(sigAns.text).toBe("Jane Doe");
+
+    const dateRes = classifyField("Today's Date");
+    expect(dateRes.category).toBe(FieldCategory.DATE_TODAY);
+    const dateAns = resolveFieldValue(dateRes.category, mockProfile, "intern");
+    expect(dateAns.text).toBe(new Date().toISOString().split("T")[0]);
+  });
+
+  it("classifies and resolves ITAR and work authorization", () => {
+    const itarRes = classifyField("Are you a U.S. Person under ITAR export regulations?");
+    expect(itarRes.category).toBe(FieldCategory.WORK_AUTH_ITAR);
+    const itarAns = resolveFieldValue(itarRes.category, mockProfile, "intern");
+    expect(itarAns.booleanVal).toBe(true);
+    expect(itarAns.optionCandidates).toContain("Yes");
+  });
+
+  it("evaluates graduation date ranges accurately", () => {
+    const rangeRes = classifyField("Do you expect to graduate between October 2025 and June 2027?");
+    expect(rangeRes.category).toBe(FieldCategory.EDU_GRAD_RANGE);
+    const rangeAns = resolveFieldValue(rangeRes.category, mockProfile, "intern", {
+      label: "Do you expect to graduate between October 2025 and June 2027?",
+    });
+    expect(rangeAns.optionCandidates).toContain("Yes");
+  });
+
+  it("uses explicit recurring answers instead of inventing factual answers", () => {
+    const profile = {
+      ...mockProfile,
+      answers: {
+        over18: false,
+        willingOnsite: false,
+        previousEmployee: true,
+        referralSource: "University career fair",
+      },
+    };
+
+    expect(resolveFieldValue(FieldCategory.LEGAL_AGE_18, profile, "fulltime").booleanVal).toBe(false);
+    expect(resolveFieldValue(FieldCategory.WORKPLACE_ONSITE, profile, "fulltime").booleanVal).toBe(false);
+    expect(resolveFieldValue(FieldCategory.EMPLOYMENT_PREVIOUS, profile, "fulltime").booleanVal).toBe(true);
+    expect(resolveFieldValue(FieldCategory.SOURCE_REFERRAL, profile, "fulltime").text).toBe("University career fair");
+    expect(resolveFieldValue(FieldCategory.EMPLOYMENT_FELONY, mockProfile, "fulltime")).toBeNull();
+  });
+
+  it("supports profile custom-answer overrides for recurring question wording", () => {
+    const profile = {
+      ...mockProfile,
+      customAnswers: [
+        { match: "preferred programming language", answer: "TypeScript" },
+        { match: "/weekends?/i", answer: false },
+      ],
+    };
+
+    expect(
+      resolveFieldValue(FieldCategory.UNKNOWN, profile, "fulltime", {
+        label: "What is your preferred programming language?",
+      }).text,
+    ).toBe("TypeScript");
+    expect(
+      resolveFieldValue(FieldCategory.UNKNOWN, profile, "fulltime", {
+        label: "Can you work weekends?",
+      }).booleanVal,
+    ).toBe(false);
+    expect(
+      canResolveQuestion(
+        { label: "Why do you want to join us?", required: true, type: "textarea" },
+        {
+          ...mockProfile,
+          customAnswers: [{ match: "why do you want to join us", answer: "Configured response" }],
+        },
+        "fulltime",
+      ),
+    ).toBe(true);
+  });
+
+  it("blocks required questions whose factual answer is absent, including education", () => {
+    const felonyQuestion = {
+      label: "Have you ever been convicted of a felony?",
+      required: true,
+      type: "radio",
+    };
+    expect(canResolveQuestion(felonyQuestion, mockProfile, "fulltime")).toBe(false);
+    expect(
+      canResolveQuestion(
+        felonyQuestion,
+        { ...mockProfile, answers: { felonyConviction: false } },
+        "fulltime",
+      ),
+    ).toBe(true);
+
+    expect(
+      canResolveQuestion(
+        { label: "Graduation year", required: true, type: "select" },
+        { ...mockProfile, education: { ...mockProfile.education, graduationYear: undefined } },
+        "intern",
+      ),
+    ).toBe(false);
   });
 });

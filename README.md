@@ -121,6 +121,8 @@ Create or edit your configuration at `~/.config/safar/config.json` (or `%APPDATA
       "school": "University of California, Berkeley",
       "degree": "Bachelor of Science",
       "discipline": "Computer Science",
+      "startYear": 2022,
+      "startMonth": 8,
       "graduationYear": 2026,
       "graduationMonth": 5,
       "gpa": "3.85"
@@ -137,6 +139,25 @@ Create or edit your configuration at `~/.config/safar/config.json` (or `%APPDATA
       "veteran": "Decline to Self-Identify",
       "disability": "Decline to Self-Identify"
     },
+    "answers": {
+      "over18": true,
+      "willingOnsite": true,
+      "currentStudent": true,
+      "previousEmployee": false,
+      "hasRelativesAtCompany": false,
+      "subjectToNonCompete": false,
+      "felonyConviction": false,
+      "referralSource": "LinkedIn",
+      "noticePeriod": "None",
+      "program": "Summer Internship",
+      "pronouns": "Prefer not to say"
+    },
+    "customAnswers": [
+      {
+        "match": "preferred programming language",
+        "answer": "TypeScript"
+      }
+    ],
     "intern": {
       "resumePath": "C:\\Users\\Jane\\Documents\\resume_intern.pdf",
       "willingToRelocate": true,
@@ -173,10 +194,14 @@ Create or edit your configuration at `~/.config/safar/config.json` (or `%APPDATA
 Safar automatically categorizes positions into **Internship** (`intern`) vs **Full-Time / New Grad** (`fulltime` / `ft`) using title keywords and source repositories.
 
 You can customize your application per role type by adding `"intern"` and `"fulltime"` (or `"ft"`) overrides directly inside `"profile"`.
-- **Graduation Dates**: Specify `graduationYear` (e.g. `2027`) and `graduationMonth` (as number `5` or string `"May"`, `"August"`, etc.) independently for intern vs full-time.
+- **Education Dates**: Specify `startYear`, `startMonth`, `graduationYear`, and `graduationMonth`. Months accept a number such as `5` or a name such as `"May"`, and every value can be overridden for intern or full-time roles.
 - **Relocation & Work Auth**: Set `willingToRelocate: true/false` globally or override per role. Safar handles standard relocation, onsite/hybrid commute, and 18+ legal age questions automatically.
 - **Conditional GitHub**: Set `"githubOnlyIfRequired": true` to provide your GitHub link only when the application explicitly marks it as mandatory.
 - **Demographics**: Standard voluntary self-identification fields (gender, race/ethnicity, veteran status, disability) default to `"Decline to Self-Identify"`. Safar fuzzy-matches whatever preference you configure.
+- **Standard answers**: Put factual yes/no and recurring application answers under `profile.answers`. Safar will not invent answers for age, onsite work, enrollment, prior employment, relatives, non-competes, convictions, referral source, or notice period.
+- **Custom answers**: Add `profile.customAnswers` entries for recurring company wording. `match` accepts a case-insensitive substring or a `/regular expression/i` string.
+- **Submission audit**: Safar reads every required, identity, resume, and education field back from the rendered form. It submits only when those controls contain valid values.
+- **Application log**: Every confirmed submission is appended to `log.txt` in the directory where Safar is run, including the company, job title, link, timestamp, and the value read from each form field.
 
 ---
 
