@@ -183,7 +183,17 @@ Create or edit your configuration at `~/.config/safar/config.json` (or `%APPDATA
     "enabled": true,
     "lookbackDays": 3,
     "dryRun": false,
-    "headless": true,
+    "headless": false,
+    "provider": "simplify",
+    "simplify": {
+      "intern": {
+        "userDataDir": "C:\\Users\\Jane\\.config\\safar\\browser\\simplify-intern"
+      },
+      "fulltime": {
+        "userDataDir": "C:\\Users\\Jane\\.config\\safar\\browser\\simplify-fulltime"
+      },
+      "autofillTimeoutMs": 60000
+    },
     "usOnly": true,
     "filter": "title:forward,software,technology"
   }
@@ -202,6 +212,14 @@ You can customize your application per role type by adding `"intern"` and `"full
 - **Custom answers**: Add `profile.customAnswers` entries for recurring company wording. `match` accepts a case-insensitive substring or a `/regular expression/i` string.
 - **Submission audit**: Safar reads every required, identity, resume, and education field back from the rendered form. It submits only when those controls contain valid values.
 - **Application log**: Every confirmed submission is appended to `log.txt` in the directory where Safar is run, including the company, job title, link, timestamp, and the value read from each form field.
+
+#### Simplify Copilot accounts
+
+Set `autoApply.provider` to `"simplify"` to route applications through two isolated persistent Chrome profiles. Internship jobs use `autoApply.simplify.intern`; full-time and new-grad jobs use `autoApply.simplify.fulltime`. Safar always opens these profiles in a visible browser because Chrome extensions do not run reliably in headless mode.
+
+Before the first run, open Chrome once with each configured `userDataDir`, install Simplify Copilot, sign into the corresponding account, complete its profile, and allow the extension on application sites. Keep the two directories different. Safar opens the correct profile, clicks **Autofill This Page**, waits for the form to settle, audits every required/resume/education field, submits, and records a confirmed submission in its database and `log.txt`.
+
+Use `"provider": "native"` to keep using Safar's built-in field filler.
 
 ---
 

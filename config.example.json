@@ -150,7 +150,17 @@
     "enabled": true,
     "lookbackDays": 3,
     "dryRun": false,
-    "headless": true,
+    "headless": false,
+    "provider": "simplify",
+    "simplify": {
+      "intern": {
+        "userDataDir": "C:\\Users\\Jane\\.config\\safar\\browser\\simplify-intern"
+      },
+      "fulltime": {
+        "userDataDir": "C:\\Users\\Jane\\.config\\safar\\browser\\simplify-fulltime"
+      },
+      "autofillTimeoutMs": 60000
+    },
     "usOnly": true,
     "filter": "title:forward,software,technology"
   }

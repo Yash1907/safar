@@ -1,5 +1,7 @@
 const { chromium } = require("playwright");
 const fs = require("node:fs");
+const os = require("node:os");
+const path = require("node:path");
 const {
   FieldCategory,
   classifyField,
@@ -832,7 +834,10 @@ async function auditForm(page) {
     };
     const clean = (value) => String(value || "").replace(/\s+/g, " ").trim();
     const labelFor = (el) => {
-      if ((el.getAttribute("type") || "").toLowerCase() === "radio") {
+      if (
+        (el.getAttribute("type") || "").toLowerCase() === "radio" ||
+        (el.getAttribute("role") || "").toLowerCase() === "radio"
+      ) {
         const group = el.closest("fieldset, [role='radiogroup'], [role='group'], [class*='fieldEntry'], .field, .form-group");
         const candidates = group
           ? Array.from(group.querySelectorAll("legend, label, [class*='label']"))
@@ -871,7 +876,7 @@ async function auditForm(page) {
 
     const controls = Array.from(
       document.querySelectorAll(
-        "input:not([type='hidden']):not([type='submit']):not([type='button']), select, textarea, [role='combobox']",
+        "input:not([type='hidden']):not([type='submit']):not([type='button']), select, textarea, [role='combobox'], [role='radio'], [role='checkbox']",
       ),
     ).filter((el) => !el.disabled && (el.type === "file" || visible(el)));
 
@@ -879,6 +884,7 @@ async function auditForm(page) {
     const result = [];
     for (const el of controls) {
       const type = (el.getAttribute("type") || el.tagName || "").toLowerCase();
+      const role = (el.getAttribute("role") || "").toLowerCase();
       const label = labelFor(el);
       const container = el.closest(
         "[class*='fieldEntry'], .field, [class*='field'], .form-group, [role='group'], fieldset, div:has(> label)",
@@ -894,14 +900,14 @@ async function auditForm(page) {
       let key = `${label}|${el.name || el.id || type}`;
       let value = "";
       let filled = false;
-      if (type === "radio") {
+      if (type === "radio" || role === "radio") {
         const groupName = el.name;
-        key = `${label}|radio|${groupName}`;
+        key = `${label}|radio|${groupName || containerText}`;
         const scope = container || document;
-        const radios = groupName
+        const radios = type === "radio" && groupName
           ? Array.from(document.querySelectorAll(`input[type="radio"][name="${CSS.escape(groupName)}"]`))
-          : Array.from(scope.querySelectorAll('input[type="radio"]'));
-        const checked = radios.find((radio) => radio.checked);
+          : Array.from(scope.querySelectorAll('input[type="radio"], [role="radio"]'));
+        const checked = radios.find((radio) => radio.checked || radio.getAttribute("aria-checked") === "true");
         if (checked) {
           const optionLabel = checked.labels
             ? Array.from(checked.labels).map((node) => clean(node.textContent)).find(Boolean)
@@ -909,9 +915,10 @@ async function auditForm(page) {
           value = clean(optionLabel || checked.value);
           filled = true;
         }
-      } else if (type === "checkbox") {
-        value = el.checked ? clean(label || el.value || "Yes") : "";
-        filled = el.checked;
+      } else if (type === "checkbox" || role === "checkbox") {
+        const checked = el.checked || el.getAttribute("aria-checked") === "true";
+        value = checked ? clean(label || el.value || el.textContent || "Yes") : "";
+        filled = Boolean(checked);
       } else if (type === "file") {
         value = Array.from(el.files || []).map((file) => file.name).join(", ");
         filled = Boolean(value);
@@ -1022,12 +1029,7 @@ async function fillDynamicQuestionsAndAudit(page, profile, platform, roleType) {
 }
 
 async function launchBrowser(options) {
-  const candidates = [
-    chromium.executablePath(),
-    "C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe",
-    "C:\\Program Files (x86)\\Microsoft\\Edge\\Application\\msedge.exe",
-    "C:\\Program Files\\Microsoft\\Edge\\Application\\msedge.exe",
-  ].filter((candidate, index, all) => candidate && all.indexOf(candidate) === index && fs.existsSync(candidate));
+  const candidates = browserExecutableCandidates();
   let lastError;
   for (const executablePath of candidates) {
     try {
@@ -1040,47 +1042,227 @@ async function launchBrowser(options) {
   return chromium.launch(options);
 }
 
-async function runAutoApply({ url, platform, profile, dryRun, headless, roleType }) {
-  const isHeadless = headless !== false;
+function browserExecutableCandidates(preferred) {
+  return [
+    preferred,
+    chromium.executablePath(),
+    "C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe",
+    "C:\\Program Files (x86)\\Microsoft\\Edge\\Application\\msedge.exe",
+    "C:\\Program Files\\Microsoft\\Edge\\Application\\msedge.exe",
+  ].filter((candidate, index, all) => candidate && all.indexOf(candidate) === index && fs.existsSync(candidate));
+}
+
+function expandUserPath(value) {
+  if (!value) return value;
+  if (value === "~") return os.homedir();
+  if (value.startsWith("~/") || value.startsWith("~\\")) {
+    return path.join(os.homedir(), value.slice(2));
+  }
+  return path.resolve(value);
+}
+
+async function launchSimplifyContext(simplify, options) {
+  const userDataDir = expandUserPath(simplify.userDataDir);
+  fs.mkdirSync(userDataDir, { recursive: true });
+  const candidates = browserExecutableCandidates(simplify.executablePath);
+  let lastError;
+  for (const executablePath of candidates) {
+    try {
+      return await chromium.launchPersistentContext(userDataDir, {
+        ...options,
+        headless: false,
+        executablePath,
+        ignoreDefaultArgs: ["--disable-extensions"],
+        args: [...(options.args || []), "--enable-extensions"],
+      });
+    } catch (error) {
+      lastError = error;
+    }
+  }
+  if (lastError) throw lastError;
+  return chromium.launchPersistentContext(userDataDir, {
+    ...options,
+    headless: false,
+    ignoreDefaultArgs: ["--disable-extensions"],
+    args: [...(options.args || []), "--enable-extensions"],
+  });
+}
+
+async function clickFirstVisibleInFrames(page, selectors) {
+  for (const frame of page.frames()) {
+    for (const selector of selectors) {
+      const locator = frame.locator(selector).first();
+      if (await locator.isVisible().catch(() => false)) {
+        await locator.click({ timeout: 3000 }).catch(() => {});
+        return true;
+      }
+    }
+  }
+  return false;
+}
+
+async function triggerSimplifyAutofill(page, timeoutMs) {
+  const autofillSelectors = [
+    'button:has-text("Autofill This Page")',
+    '[role="button"]:has-text("Autofill This Page")',
+    '[data-testid*="autofill" i]',
+  ];
+  const panelSelectors = [
+    '[aria-label*="Simplify Copilot" i]',
+    '[title*="Simplify Copilot" i]',
+    '[data-testid*="simplify" i]',
+  ];
+  const deadline = Date.now() + Math.min(timeoutMs, 30_000);
+  while (Date.now() < deadline) {
+    if (await clickFirstVisibleInFrames(page, autofillSelectors)) return true;
+    await clickFirstVisibleInFrames(page, panelSelectors);
+    await page.waitForTimeout(500);
+  }
+  return false;
+}
+
+async function waitForSimplifyAudit(page, timeoutMs) {
+  const deadline = Date.now() + timeoutMs;
+  let lastAudit = await auditForm(page);
+  let stablePasses = 0;
+  while (Date.now() < deadline) {
+    await page.waitForTimeout(1200);
+    lastAudit = await auditForm(page);
+    if (lastAudit.missing.length === 0) {
+      stablePasses++;
+      if (stablePasses >= 3) return lastAudit;
+    } else {
+      stablePasses = 0;
+    }
+  }
+  return lastAudit;
+}
+
+async function submitAndConfirm(page) {
+  const submitBtn = await page.$(
+    'button[type="submit"], input[type="submit"], button#submit_app, button:has-text("Submit Application"), button:has-text("Submit application")',
+  );
+  if (!submitBtn || !(await submitBtn.isVisible().catch(() => false))) {
+    return { success: false, error: "Submit button not found on application form" };
+  }
+  await submitBtn.click();
+  let confirmationUrl = page.url();
+  for (let index = 0; index < 15; index++) {
+    await page.waitForTimeout(1000);
+    confirmationUrl = page.url();
+    const content = (await page.content()).toLowerCase();
+    if (
+      confirmationUrl.includes("confirmation") ||
+      confirmationUrl.includes("applied") ||
+      content.includes("thank you for applying") ||
+      content.includes("application submitted") ||
+      content.includes("we've received your application") ||
+      content.includes("application has been submitted")
+    ) {
+      return { success: true, confirmationUrl };
+    }
+    const errorEl = await page.$(
+      '.error, .error-message, [class*="error" i], [aria-invalid="true"], #error_message, .alert-danger',
+    );
+    if (errorEl && await errorEl.isVisible().catch(() => false)) {
+      const message = ((await errorEl.innerText().catch(() => "")) || "").trim();
+      if (message) return { success: false, error: message };
+    }
+  }
+  return { success: false, error: "Application did not reach a confirmed submission page" };
+}
+
+async function runSimplifyFlow({ page, browser, simplify, dryRun }) {
+  const timeoutMs = Math.max(10_000, simplify.autofillTimeoutMs || 60_000);
+  const triggered = await triggerSimplifyAutofill(page, timeoutMs);
+  if (!triggered) {
+    await browser.close();
+    return {
+      success: false,
+      error: `Simplify Copilot was not ready in browser profile ${expandUserPath(simplify.userDataDir)}. Install the extension, sign in, and enable access to application sites in this profile.`,
+    };
+  }
+
+  const audit = await waitForSimplifyAudit(page, timeoutMs);
+  if (audit.missing.length > 0) {
+    await browser.close();
+    return { success: false, error: auditError(audit.missing), fields: audit.fields };
+  }
+  if (dryRun) {
+    await browser.close();
+    return {
+      success: true,
+      dryRun: true,
+      message: "Dry-run: Simplify autofill completed and every required field passed audit",
+      fields: audit.fields,
+    };
+  }
+
+  const submission = await submitAndConfirm(page);
+  await browser.close();
+  return { ...submission, fields: audit.fields };
+}
+
+async function runAutoApply({ url, platform, profile, dryRun, headless, roleType, simplify }) {
+  const isHeadless = simplify ? false : headless !== false;
   const effectiveRoleType = roleType || (url.toLowerCase().includes("intern") ? "intern" : "fulltime");
   const launchArgs = isHeadless
     ? ["--disable-blink-features=AutomationControlled", "--no-sandbox"]
     : ["--disable-blink-features=AutomationControlled", "--no-sandbox"];
 
-  const browser = await launchBrowser({
-    headless: isHeadless,
-    args: launchArgs,
-    slowMo: isHeadless ? undefined : 60,
-  });
+  let browser;
+  let context;
+  if (simplify) {
+    context = await launchSimplifyContext(simplify, {
+      args: launchArgs,
+      slowMo: 60,
+      viewport: { width: 1280, height: 900 },
+    });
+    browser = { close: () => context.close() };
+  } else {
+    browser = await launchBrowser({
+      headless: isHeadless,
+      args: launchArgs,
+      slowMo: isHeadless ? undefined : 60,
+    });
+    context = await browser.newContext({
+      userAgent: "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
+      viewport: isHeadless ? undefined : { width: 1280, height: 900 },
+    });
 
-  const context = await browser.newContext({
-    userAgent: "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
-    viewport: isHeadless ? undefined : { width: 1280, height: 900 },
-  });
-
-  await context.addInitScript(() => {
-    Object.defineProperty(navigator, "webdriver", {
-      get: () => undefined,
+    await context.addInitScript(() => {
+      Object.defineProperty(navigator, "webdriver", {
+        get: () => undefined,
+      });
+      Object.defineProperty(navigator, "plugins", {
+        get: () => [1, 2, 3, 4, 5],
+      });
+      Object.defineProperty(navigator, "languages", {
+        get: () => ["en-US", "en"],
+      });
+      window.chrome = {
+        runtime: {},
+        app: {},
+        loadTimes: () => {},
+        csi: () => {},
+      };
     });
-    Object.defineProperty(navigator, "plugins", {
-      get: () => [1, 2, 3, 4, 5],
-    });
-    Object.defineProperty(navigator, "languages", {
-      get: () => ["en-US", "en"],
-    });
-    window.chrome = {
-      runtime: {},
-      app: {},
-      loadTimes: () => {},
-      csi: () => {},
-    };
-  });
+  }
 
   const page = await context.newPage();
 
   try {
     await page.goto(url, { waitUntil: "domcontentloaded", timeout: 30000 });
     await page.waitForTimeout(2000);
+
+    if (simplify) {
+      return await runSimplifyFlow({ page, browser, simplify, dryRun });
+    }
+
+    if (!profile) {
+      await browser.close();
+      return { success: false, error: "Native application profile is missing" };
+    }
 
     // Ensure resume file exists if specified
     const resumeExists = profile.resumePath && fs.existsSync(profile.resumePath);

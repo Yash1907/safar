@@ -10,7 +10,13 @@ import {
 import { isJobAlreadyApplied } from "../dedup.ts";
 import { classifyJob, detectPlatform } from "../classifier.ts";
 import { detectJobSite } from "../site.ts";
-import { loadConfig, resolveProfileForRole, type ProfileConfig } from "../config.ts";
+import {
+  loadConfig,
+  resolveProfileForRole,
+  resolveSimplifyBrowserProfile,
+  type ProfileConfig,
+  type SimplifyBrowserProfileConfig,
+} from "../config.ts";
 import { sendApplicationAlert } from "../discord.ts";
 import { detectRoleType, formatRoleType, roleBadge, type RoleType } from "../role.ts";
 import { parseFilterQuery, applyFilter } from "../filter.ts";
@@ -80,10 +86,11 @@ export interface AutoApplySingleResult {
 export function invokePlaywrightRunnerAsync(payload: {
   url: string;
   platform: string;
-  profile: ProfileConfig;
+  profile?: ProfileConfig | null;
   roleType?: RoleType;
   dryRun: boolean;
   headless?: boolean;
+  simplify?: SimplifyBrowserProfileConfig & { autofillTimeoutMs?: number };
 }): Promise<RunnerResult> {
   return new Promise((resolve) => {
     const runnerPath = join(__dirname, "playwright-runner.cjs");
@@ -184,6 +191,10 @@ export async function autoApplySingleJob(
     config.autoApply?.excludeNonUS === true;
   const now = Math.floor(Date.now() / 1000);
   const roleType = detectRoleType(job);
+  const useSimplify = config.autoApply?.provider === "simplify";
+  const simplifyProfile = useSimplify
+    ? resolveSimplifyBrowserProfile(config.autoApply, roleType)
+    : undefined;
 
   // Check US location if usOnly is enabled
   if (usOnly && !isUsJob(job)) {
@@ -232,14 +243,18 @@ export async function autoApplySingleJob(
     };
   }
 
-  // 3. Resolve the role-specific profile before classification so preflight
-  // can prove that every required question has a configured answer.
+  if (useSimplify && !simplifyProfile) {
+    const reason = `Simplify browser profile missing for ${formatRoleType(roleType)}`;
+    recordSkippedJob(db, job.id, reason, now);
+    return { success: false, platform, roleType, reason };
+  }
+
+  // Native filling uses the local profile. Simplify uses the account stored in
+  // the role-specific persistent browser directory.
   const resolvedProfile = resolveProfileForRole(config.profile, roleType);
   if (
-    !resolvedProfile ||
-    !resolvedProfile.firstName ||
-    !resolvedProfile.lastName ||
-    !resolvedProfile.email
+    !useSimplify &&
+    (!resolvedProfile || !resolvedProfile.firstName || !resolvedProfile.lastName || !resolvedProfile.email)
   ) {
     const reason = `Profile details missing in config for ${formatRoleType(roleType)}`;
     recordSkippedJob(db, job.id, reason, now);
@@ -251,17 +266,14 @@ export async function autoApplySingleJob(
     };
   }
 
-  // 4. Classify questions and confirm this profile can answer them.
-  const classification = await classifyJob(job, resolvedProfile, roleType);
-  if (!classification.isDefaultJob) {
-    const reason = classification.reason || "Custom questions required";
-    recordSkippedJob(db, job.id, reason, now);
-    return {
-      success: false,
-      platform,
-      roleType,
-      reason,
-    };
+  if (!useSimplify) {
+    // Native mode preflights whether the local profile can answer every field.
+    const classification = await classifyJob(job, resolvedProfile!, roleType);
+    if (!classification.isDefaultJob) {
+      const reason = classification.reason || "Custom questions required";
+      recordSkippedJob(db, job.id, reason, now);
+      return { success: false, platform, roleType, reason };
+    }
   }
 
   // 5. Submit application via Playwright
@@ -271,7 +283,10 @@ export async function autoApplySingleJob(
     profile: resolvedProfile,
     roleType,
     dryRun,
-    headless,
+    headless: useSimplify ? false : headless,
+    simplify: simplifyProfile
+      ? { ...simplifyProfile, autofillTimeoutMs: config.autoApply.simplify?.autofillTimeoutMs }
+      : undefined,
   });
 
   if (applyRes.success) {
@@ -320,8 +335,9 @@ export async function autoApplySingleJob(
 function invokePlaywrightRunner(payload: {
   url: string;
   platform: string;
-  profile: ProfileConfig;
+  profile?: ProfileConfig | null;
   dryRun: boolean;
+  simplify?: SimplifyBrowserProfileConfig & { autofillTimeoutMs?: number };
 }): RunnerResult {
   const runnerPath = join(__dirname, "playwright-runner.cjs");
 
@@ -358,6 +374,7 @@ export async function runAutoApplyBatch(
   const lookbackDays = options.lookbackDays ?? config.autoApply?.lookbackDays ?? 3;
   const dryRun = options.dryRun ?? config.autoApply?.dryRun ?? false;
   const headless = options.headless ?? config.autoApply?.headless ?? true;
+  const useSimplify = config.autoApply?.provider === "simplify";
 
   // Resolve filter: CLI options.filter takes precedence, then config.autoApply.filter
   let effectiveFilter: string | undefined = undefined;
@@ -483,10 +500,29 @@ export async function runAutoApplyBatch(
       continue;
     }
 
-    // 3. Resolve the role-specific profile first so classification can verify
-    // that every required question has a configured answer.
+    const simplifyProfile = useSimplify
+      ? resolveSimplifyBrowserProfile(config.autoApply, roleType)
+      : undefined;
+    if (useSimplify && !simplifyProfile) {
+      const reason = `Simplify browser profile missing for ${formatRoleType(roleType)}`;
+      recordSkippedJob(db, job.id, reason, now);
+      summary.skippedCount++;
+      summary.results.push({
+        jobId: job.id,
+        company: job.company,
+        title: job.title,
+        url: job.url,
+        roleType,
+        status: "skipped",
+        reason,
+      });
+      continue;
+    }
+
+    // Native filling uses the local profile. Simplify uses the account stored
+    // in the role-specific persistent browser directory.
     const resolvedProfile = resolveProfileForRole(config.profile, roleType);
-    if (!resolvedProfile || !resolvedProfile.firstName || !resolvedProfile.lastName || !resolvedProfile.email) {
+    if (!useSimplify && (!resolvedProfile || !resolvedProfile.firstName || !resolvedProfile.lastName || !resolvedProfile.email)) {
       const reason = `Profile details missing in ~/.config/safar/config.json for ${formatRoleType(roleType)}`;
       recordSkippedJob(db, job.id, reason, now);
       summary.skippedCount++;
@@ -502,29 +538,31 @@ export async function runAutoApplyBatch(
       continue;
     }
 
-    // 4. Classify job questions and check profile answerability.
-    options.onProgress?.(`Classifying ${job.company} — "${job.title}" [${roleBadge(roleType).toUpperCase()}] (${platform})...`);
-    const classification = await classifyJob(job, resolvedProfile, roleType);
+    if (!useSimplify) {
+      // Native mode checks that every required question has a local answer.
+      options.onProgress?.(`Classifying ${job.company} — "${job.title}" [${roleBadge(roleType).toUpperCase()}] (${platform})...`);
+      const classification = await classifyJob(job, resolvedProfile!, roleType);
 
-    if (!classification.isDefaultJob) {
-      const reason = classification.reason || "Custom questions required";
-      recordSkippedJob(db, job.id, reason, now);
-      summary.skippedCount++;
-      summary.results.push({
-        jobId: job.id,
-        company: job.company,
-        title: job.title,
-        url: job.url,
-        roleType,
-        status: "skipped",
-        reason,
-      });
-      continue;
+      if (!classification.isDefaultJob) {
+        const reason = classification.reason || "Custom questions required";
+        recordSkippedJob(db, job.id, reason, now);
+        summary.skippedCount++;
+        summary.results.push({
+          jobId: job.id,
+          company: job.company,
+          title: job.title,
+          url: job.url,
+          roleType,
+          status: "skipped",
+          reason,
+        });
+        continue;
+      }
     }
 
     // 5. Submit application via Playwright
     options.onProgress?.(
-      `Auto-applying to ${job.company} — "${job.title}" [${formatRoleType(roleType)}] (${dryRun ? "DRY-RUN" : "LIVE"}${headless ? "" : " [HEADED]"})...`,
+      `Auto-applying to ${job.company} — "${job.title}" [${formatRoleType(roleType)}] (${useSimplify ? "SIMPLIFY" : "NATIVE"}, ${dryRun ? "DRY-RUN" : "LIVE"}${useSimplify || !headless ? " [HEADED]" : ""})...`,
     );
     const applyRes = await invokePlaywrightRunnerAsync({
       url: job.url,
@@ -532,7 +570,10 @@ export async function runAutoApplyBatch(
       profile: resolvedProfile,
       roleType,
       dryRun,
-      headless,
+      headless: useSimplify ? false : headless,
+      simplify: simplifyProfile
+        ? { ...simplifyProfile, autofillTimeoutMs: config.autoApply.simplify?.autofillTimeoutMs }
+        : undefined,
     });
 
     if (applyRes.success) {

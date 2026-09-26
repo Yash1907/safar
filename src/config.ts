@@ -192,6 +192,22 @@ export interface AutoApplyConfig {
   filter?: string; // search query syntax to filter target jobs (e.g. "title:forward,software,technology")
   usOnly?: boolean; // default false; if true, only applies to US locations (excludes non-US)
   excludeNonUS?: boolean; // alias for usOnly
+  provider?: "native" | "simplify"; // default native
+  simplify?: SimplifyAutoApplyConfig;
+}
+
+export interface SimplifyBrowserProfileConfig {
+  /** Dedicated Chrome user-data directory containing one logged-in Simplify account. */
+  userDataDir: string;
+  /** Optional Chrome/Edge executable override. */
+  executablePath?: string;
+}
+
+export interface SimplifyAutoApplyConfig {
+  intern?: SimplifyBrowserProfileConfig;
+  fulltime?: SimplifyBrowserProfileConfig;
+  /** Time allowed for the extension to finish filling one page. */
+  autofillTimeoutMs?: number;
 }
 
 export interface SafarConfig {
@@ -628,6 +644,31 @@ function parseAutoApplyConfig(raw: unknown): AutoApplyConfig {
           : undefined;
 
   const usOnly = r.usOnly === true || r.excludeNonUS === true || r.excludeNonUs === true;
+  const simplifyRaw = r.simplify && typeof r.simplify === "object"
+    ? r.simplify as Record<string, unknown>
+    : undefined;
+  const parseBrowserProfile = (value: unknown): SimplifyBrowserProfileConfig | undefined => {
+    if (!value || typeof value !== "object") return undefined;
+    const profile = value as Record<string, unknown>;
+    if (typeof profile.userDataDir !== "string" || !profile.userDataDir.trim()) return undefined;
+    return {
+      userDataDir: profile.userDataDir.trim(),
+      executablePath:
+        typeof profile.executablePath === "string" && profile.executablePath.trim()
+          ? profile.executablePath.trim()
+          : undefined,
+    };
+  };
+  const simplify = simplifyRaw
+    ? {
+        intern: parseBrowserProfile(simplifyRaw.intern),
+        fulltime: parseBrowserProfile(simplifyRaw.fulltime ?? simplifyRaw.ft),
+        autofillTimeoutMs:
+          typeof simplifyRaw.autofillTimeoutMs === "number" && simplifyRaw.autofillTimeoutMs > 0
+            ? simplifyRaw.autofillTimeoutMs
+            : 60_000,
+      }
+    : undefined;
 
   return {
     enabled: r.enabled !== false,
@@ -637,7 +678,16 @@ function parseAutoApplyConfig(raw: unknown): AutoApplyConfig {
     filter: rawFilter ? rawFilter.trim() : undefined,
     usOnly: usOnly ? true : undefined,
     excludeNonUS: usOnly ? true : undefined,
+    provider: r.provider === "simplify" ? "simplify" : "native",
+    simplify,
   };
+}
+
+export function resolveSimplifyBrowserProfile(
+  config: AutoApplyConfig,
+  roleType: RoleType,
+): SimplifyBrowserProfileConfig | undefined {
+  return roleType === "intern" ? config.simplify?.intern : config.simplify?.fulltime;
 }
 
 /**

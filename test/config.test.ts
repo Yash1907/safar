@@ -2,7 +2,13 @@ import { describe, expect, test } from "bun:test";
 import { writeFileSync, mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { loadConfig, defaultConfig, resolveConfigPath, resolveProfileForRole } from "../src/config.ts";
+import {
+  loadConfig,
+  defaultConfig,
+  resolveConfigPath,
+  resolveProfileForRole,
+  resolveSimplifyBrowserProfile,
+} from "../src/config.ts";
 import { buildSources } from "../src/sources/registry.ts";
 
 function tmpConfigPath(contents: string): string {
@@ -276,6 +282,37 @@ describe("autoApply config parsing", () => {
     );
     expect(loadConfig(p2).autoApply.usOnly).toBe(true);
     expect(loadConfig(p2).autoApply.excludeNonUS).toBe(true);
+  });
+
+  test("parses isolated Simplify browser profiles for intern and full-time roles", () => {
+    const path = tmpConfigPath(
+      JSON.stringify({
+        autoApply: {
+          provider: "simplify",
+          simplify: {
+            intern: { userDataDir: "C:/profiles/intern" },
+            fulltime: {
+              userDataDir: "C:/profiles/fulltime",
+              executablePath: "C:/Chrome/chrome.exe",
+            },
+            autofillTimeoutMs: 45_000,
+          },
+        },
+      }),
+    );
+    const config = loadConfig(path).autoApply;
+    expect(config.provider).toBe("simplify");
+    expect(config.simplify?.intern?.userDataDir).toBe("C:/profiles/intern");
+    expect(config.simplify?.fulltime?.userDataDir).toBe("C:/profiles/fulltime");
+    expect(config.simplify?.fulltime?.executablePath).toBe("C:/Chrome/chrome.exe");
+    expect(config.simplify?.autofillTimeoutMs).toBe(45_000);
+    expect(resolveSimplifyBrowserProfile(config, "intern")?.userDataDir).toBe("C:/profiles/intern");
+    expect(resolveSimplifyBrowserProfile(config, "fulltime")?.userDataDir).toBe("C:/profiles/fulltime");
+  });
+
+  test("defaults unknown providers to the native applier", () => {
+    const path = tmpConfigPath(JSON.stringify({ autoApply: { provider: "unknown" } }));
+    expect(loadConfig(path).autoApply.provider).toBe("native");
   });
 });
 
